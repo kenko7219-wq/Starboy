@@ -26,6 +26,8 @@ const userStopInitiated = {};
 const userSLSkipWaitingForWin = {};
 const userPlatforms = {};
 const userCredentials = {};
+const userAILast10Results = {};
+const userAIRoundCount = {};
 let userSettings = {};
 let userGameInfo = {};
 let userStats = {};
@@ -108,9 +110,7 @@ const EMOJI = {
   DALEMBERT: '📽',
   CUSTOM: '📠',
   TIME: '⌛️',
-  RESULTSBS: '📊',
-  DRAGON: '🐉',
-  SUPER: '⚡'
+  RESULTSBS: '📊'
 };
 
 const STYLE = {
@@ -123,7 +123,7 @@ const STYLE = {
   INFO: (text) => `ℹ️ ${text}`
 };
 
-const BOT_TOKEN = "8931156495:AAGqXEfBvPDUGBNyxIO4KUfTf9seEEJOWR4";
+const BOT_TOKEN = "8504941407:AAHJwJAMgkqrdcags99lbgv5q2Srq41Nw2w";
 const ADMIN_ID = 8769857023;
 const WIN_LOSE_CHECK_INTERVAL = 5;
 const MAX_BALANCE_RETRIES = 10;
@@ -134,14 +134,25 @@ const MAX_CONSECUTIVE_ERRORS = 10;
 const MAX_TELEGRAM_RETRIES = 3;
 const TELEGRAM_RETRY_DELAY = 2000;
 const DEFAULT_BS_ORDER = "BSBBSBSSSB";
+const LEO_BIG_PATTERN = "BBSBSSSBSB";
+const LEO_SMALL_PATTERN = "SSBSBBBSBS";
 const SNIPER_MAX_HITS = 2;
 const SNIPER_MAX_LOSSES = 4;
 
-const DEFAULT_DIGIT_MAPPING = {
-  '0': 'B', '1': 'B', '2': 'S', '3': 'S', '4': 'B',
-  '5': 'S', '6': 'S', '7': 'B', '8': 'B', '9': 'S',
-  'DEFAULT': 'B'
+// ===== DREAM PATTERNS =====
+const dreamPatterns = {
+  "0": "SBBSBSSBBS",
+  "1": "BBSBSBSBBS",
+  "2": "SBSBBSBSBB",
+  "3": "BSBSBSSBSB",
+  "4": "SBBSBSBBSS",
+  "5": "BSSBSBBSBS",
+  "6": "BSBSSBSBSB",
+  "7": "SBSBSBSSBB",
+  "8": "BSBBSBSBSB",
+  "9": "SBSBBSSBSB"
 };
+// =========================
 
 function loadAdmins() {
   try {
@@ -494,24 +505,6 @@ async function getWingoGameResults(session, gameType = "WINGO") {
   } catch (error) { return { error: error.message }; }
 }
 
-async function getOldestHistory(session, gameType = "TRX") {
-  let typeId;
-  if (gameType === "TRX") typeId = 13;
-  else if (gameType === "WINGO_30S") typeId = 30;
-  else if (gameType === "WINGO_3MIN") typeId = 2;
-  else if (gameType === "WINGO_5MIN") typeId = 3;
-  else typeId = 1;
-  const body = { "pageSize": 100, "pageNo": 1, "typeId": typeId, "language": 7, "random": "4ad5325e389745a882f4189ed6550e70" };
-  body.signature = generateSignature(body).toUpperCase();
-  body.timestamp = Math.floor(Date.now() / 1000);
-  try {
-    const response = await session.post("GetNoaverageEmerdList", body);
-    const data = response.data;
-    if (data && data.code === 0 && data.data && data.data.list) return data.data.list;
-    return null;
-  } catch (error) { return null; }
-}
-
 async function getGameResults20(session, gameType = "TRX") {
   let typeId;
   if (gameType === "TRX") typeId = 13;
@@ -614,7 +607,7 @@ async function checkProfitAndStopLoss(userId, bot) {
   const settings = userSettings[userId] || {};
   const targetProfit = settings.target_profit;
   const stopLossLimit = settings.stop_loss;
-  if (["CYBER_SNIPER", "COLOR_SNIPER"].includes(settings.strategy)) return false;
+  if (["COLOR_SNIPER"].includes(settings.strategy)) return false;
   if (!targetProfit && !stopLossLimit) return false;
   let currentProfit, balance;
   if (settings.virtual_mode) {
@@ -685,43 +678,6 @@ function safeGetUserStats(userId) {
 }
 
 // ===== STRATEGIES =====
-function getCyberSniperPrediction(userId) {
-  const state = userSettings[userId].cyber_sniper_state || { active: false, direction: null, sequence: [], step: 0, hit_count: 0, got_same_result: false };
-  const lastNumbers = userLastResults[userId] || [];
-  const lastNumStr = lastNumbers.length > 0 ? lastNumbers[lastNumbers.length - 1] : null;
-  if (!state.active && lastNumStr) {
-    if (lastNumStr === "0") { state.active = true; state.direction = "B"; state.sequence = ["B"]; state.step = 0; state.hit_count = 0; state.got_same_result = false; }
-    else if (lastNumStr === "9") { state.active = true; state.direction = "S"; state.sequence = ["S"]; state.step = 0; state.hit_count = 0; state.got_same_result = false; }
-  }
-  userSettings[userId].cyber_sniper_state = state;
-  if (state.active) {
-    if (state.step < state.sequence.length) return { choice: state.sequence[state.step], shouldSkip: false };
-    return { choice: state.direction, shouldSkip: false };
-  }
-  return { choice: 'B', shouldSkip: true };
-}
-
-function getQuantumCalcPrediction(userId) {
-  if (!userAllResults[userId] || userAllResults[userId].length < 5) return 'B';
-  const latest5 = userAllResults[userId].slice(-5);
-  const sumLatest = latest5.map(r => r === 'B' ? 7 : 2).reduce((a, b) => a + b, 0);
-  const remainingHistory = userAllResults[userId].slice(0, -5);
-  let sumHistory = 0;
-  if (remainingHistory.length > 0) sumHistory = remainingHistory.map(r => r === 'B' ? 7 : 2).reduce((a, b) => a + b, 0);
-  const diff = Math.abs(sumLatest - sumHistory);
-  const lastDigit = diff % 10;
-  const isTwoDigitCalc = diff >= 10;
-  if (isTwoDigitCalc) return lastDigit >= 5 ? 'S' : 'B';
-  return lastDigit >= 5 ? 'B' : 'S';
-}
-
-function getTimeWarpPrediction(userId) {
-  if (!userSettings[userId].time_warp_pos) userSettings[userId].time_warp_pos = 8;
-  const pos = userSettings[userId].time_warp_pos;
-  if (!userAllResults[userId] || userAllResults[userId].length < pos) return userAllResults[userId]?.slice(-1)[0] || 'B';
-  return userAllResults[userId][userAllResults[userId].length - pos];
-}
-
 function getColorSniperPrediction(userId) {
   const state = userSettings[userId].color_sniper_state || { active: false, step: 0, hit_count: 0, waiting_for_trigger: true };
   const lastNumbers = userLastResults[userId] || [];
@@ -731,40 +687,6 @@ function getColorSniperPrediction(userId) {
   }
   userSettings[userId].color_sniper_state = state;
   return state.active ? { choice: 'R', shouldSkip: false } : { choice: 'R', shouldSkip: true };
-}
-
-function getOpPatternPrediction(userId) {
-  const OP_PATTERN_TRX = "BSBSBBSSBBBSSSBSBS";
-  if (!userSettings[userId].op_pattern_index) userSettings[userId].op_pattern_index = 0;
-  let patternIndex = userSettings[userId].op_pattern_index;
-  const betType = OP_PATTERN_TRX[patternIndex];
-  userSettings[userId].op_pattern_index = (patternIndex + 1) % OP_PATTERN_TRX.length;
-  return { choice: betType, shouldSkip: false };
-}
-
-function getCustomDigitPrediction(userId) {
-  const mapping = userSettings[userId]?.digit_mapping || DEFAULT_DIGIT_MAPPING;
-  const lastResults = userLastResults[userId] || [];
-  if (lastResults.length === 0) return { choice: mapping['DEFAULT'] || 'B', shouldSkip: false };
-  const lastDigit = lastResults[lastResults.length - 1].toString().slice(-1);
-  return { choice: mapping[lastDigit] || mapping['DEFAULT'] || 'B', shouldSkip: false };
-}
-
-async function getOldestResultPrediction(userId, session, gameType) {
-  const history = await getOldestHistory(session, gameType);
-  if (!history || history.length < 100) return { choice: 'B', shouldSkip: false };
-  const number = parseInt(history[99].number || "0");
-  const oldestBS = number >= 5 ? "B" : "S";
-  return { choice: oldestBS === "B" ? "S" : "B", shouldSkip: false };
-}
-
-function getAlinkarPrediction(userId) {
-  const ALINKAR_PATTERN = "BBSSBSBSBBSS";
-  if (!userSettings[userId].alinkar_index) userSettings[userId].alinkar_index = 0;
-  const patternIndex = userSettings[userId].alinkar_index;
-  const prediction = ALINKAR_PATTERN[patternIndex];
-  userSettings[userId].alinkar_index = (patternIndex + 1) % ALINKAR_PATTERN.length;
-  return { choice: prediction, shouldSkip: false };
 }
 
 function getTrendFollowPrediction(userId) {
@@ -839,72 +761,112 @@ function getBsOrderPrediction(userId) {
   return { choice: prediction, shouldSkip: false };
 }
 
-function getDragonFirePrediction(userId) {
-  const results = userAllResults[userId] || [];
-  if (results.length < 3) return { choice: 'B', shouldSkip: false };
-  const last3 = results.slice(-3);
-  const bigCount = last3.filter(r => r === 'B').length;
-  const smallCount = last3.filter(r => r === 'S').length;
-  let reversalCheck = false;
-  if (results.length >= 5) {
-    const last5 = results.slice(-5);
-    const big5 = last5.filter(r => r === 'B').length;
-    const small5 = last5.filter(r => r === 'S').length;
-    if (big5 >= 4 || small5 >= 4) reversalCheck = true;
+// ===== LEO STRATEGY =====
+async function getLeoPrediction(userId, settings) {
+  if (!settings.leo_state) {
+    settings.leo_state = { last_result: null, pattern_index: 0 };
   }
-  if (reversalCheck) {
-    const last5 = results.slice(-5);
-    const big5 = last5.filter(r => r === 'B').length;
-    return { choice: big5 >= 4 ? 'S' : 'B', shouldSkip: false };
+  if (settings.leo_state.last_result === null) {
+    return { prediction: 'B' };
+  } else {
+    const pattern = settings.leo_state.last_result === 'B' ? LEO_BIG_PATTERN : LEO_SMALL_PATTERN;
+    const prediction = pattern[settings.leo_state.pattern_index % pattern.length];
+    return { prediction };
   }
-  if (bigCount === 3) return { choice: 'B', shouldSkip: false };
-  if (smallCount === 3) return { choice: 'S', shouldSkip: false };
-  return { choice: bigCount > smallCount ? 'B' : 'S', shouldSkip: false };
 }
 
-function getSuperPrediction(userId) {
-  const results = userAllResults[userId] || [];
-  if (results.length < 3) return { choice: 'B', shouldSkip: false };
-  if (results.length >= 7) {
-    const last7 = results.slice(-7);
-    const big7 = last7.filter(r => r === 'B').length;
-    const small7 = last7.filter(r => r === 'S').length;
-    if (big7 >= 5) return { choice: 'B', shouldSkip: false };
-    if (small7 >= 5) return { choice: 'S', shouldSkip: false };
+function updateLeoState(settings, bigSmall) {
+  if (settings.leo_state) {
+    settings.leo_state.last_result = bigSmall;
+    const patternLength = bigSmall === 'B' ? LEO_BIG_PATTERN.length : LEO_SMALL_PATTERN.length;
+    settings.leo_state.pattern_index = (settings.leo_state.pattern_index + 1) % patternLength;
   }
-  if (results.length >= 5) {
-    const last5 = results.slice(-5);
-    const big5 = last5.filter(r => r === 'B').length;
-    const small5 = last5.filter(r => r === 'S').length;
-    if (big5 >= 4) return { choice: 'S', shouldSkip: false };
-    if (small5 >= 4) return { choice: 'B', shouldSkip: false };
-  }
-  const last3 = results.slice(-3);
-  const big3 = last3.filter(r => r === 'B').length;
-  const small3 = last3.filter(r => r === 'S').length;
-  if (big3 === 3) return { choice: 'B', shouldSkip: false };
-  if (small3 === 3) return { choice: 'S', shouldSkip: false };
-  const last5ForWeight = results.slice(-5);
-  let bigScore = 0, smallScore = 0;
-  last5ForWeight.forEach((r, i) => { const w = i + 1; if (r === 'B') bigScore += w; else smallScore += w; });
-  if (bigScore > smallScore) return { choice: 'B', shouldSkip: false };
-  if (smallScore > bigScore) return { choice: 'S', shouldSkip: false };
-  return { choice: results[results.length - 1], shouldSkip: false };
 }
 
-async function getPotatoGraPrediction(userId, session, gameType) {
+// ===== DREAM STRATEGY =====
+async function getDreamPrediction(userId, settings) {
+  if (!settings.dream_state) {
+    settings.dream_state = { first_bet: true, current_pattern: "", current_index: 0 };
+  }
+  const dreamState = settings.dream_state;
+  if (dreamState.first_bet) {
+    return { prediction: 'B' };
+  } else if (dreamState.current_pattern && dreamState.current_index < dreamState.current_pattern.length) {
+    return { prediction: dreamState.current_pattern[dreamState.current_index] };
+  } else {
+    return { prediction: 'B' };
+  }
+}
+
+function updateDreamState(settings, isWin, resultNumber) {
+  const dreamState = settings.dream_state;
+  if (!dreamState) return;
+  if (dreamState.first_bet) {
+    dreamState.first_bet = false;
+    dreamState.current_pattern = dreamPatterns[resultNumber.toString()] || dreamPatterns["0"];
+    dreamState.current_index = 0;
+  } else {
+    if (isWin) {
+      dreamState.current_pattern = dreamPatterns[resultNumber.toString()] || dreamPatterns["0"];
+      dreamState.current_index = 0;
+    } else {
+      dreamState.current_index = (dreamState.current_index + 1) % dreamState.current_pattern.length;
+    }
+  }
+}
+
+// ===== CHAT GPT V1 STRATEGY =====
+async function getAIPrediction(userId, gameType) {
   try {
-    let history;
-    if (gameType === "TRX") history = await getTrxPublicResults();
-    else history = await getGameResults20(session, gameType);
-    if (!history || history.length < 5) return { choice: 'B', shouldSkip: true };
-    const latest5 = history.slice(0, 5);
-    const pattern = latest5.map(r => parseInt(r.number || "0") % 10 >= 5 ? "B" : "S").join('');
-    if (pattern === 'BBBBS') return { choice: 'S', shouldSkip: false };
-    if (pattern === 'SSSSB') return { choice: 'B', shouldSkip: false };
-    return { choice: 'B', shouldSkip: true };
-  } catch (error) { return { choice: 'B', shouldSkip: true }; }
+    if (!userAILast10Results[userId]) {
+      userAILast10Results[userId] = [];
+    }
+    if (!userAIRoundCount[userId]) {
+      userAIRoundCount[userId] = 0;
+    }
+    
+    userAIRoundCount[userId]++;
+    
+    if (userAILast10Results[userId].length === 0) {
+      return { result: 'B', percent: '50.0' };
+    }
+    
+    const availableResults = userAILast10Results[userId].slice(-10);
+    
+    if (availableResults.length >= 3) {
+      const lastThree = availableResults.slice(-3).join('');
+      
+      if (lastThree === 'BBB') {
+        return { result: 'S', percent: '70.0' };
+      } else if (lastThree === 'SSS') {
+        return { result: 'B', percent: '70.0' };
+      }
+    }
+    
+    const counts = { B: 0, S: 0 };
+    for (const result of availableResults) {
+      counts[result]++;
+    }
+    
+    let prediction;
+    if (counts.B > counts.S) {
+      prediction = 'B';
+    } else if (counts.S > counts.B) {
+      prediction = 'S';
+    } else {
+      prediction = availableResults[availableResults.length - 1];
+    }
+    
+    const diff = Math.abs(counts.B - counts.S);
+    const confidence = 50 + (diff * 5);
+    const percent = Math.min(confidence, 95).toFixed(1);
+    
+    return { result: prediction, percent };
+  } catch (error) {
+    return { result: 'B', percent: '50.0' };
+  }
 }
+// =========================
 
 async function terminateSniperSession(userId, strategyName, bot, isHitTermination) {
   const settings = userSettings[userId] || {};
@@ -939,7 +901,6 @@ async function winLoseChecker(bot) {
         if (!session) continue;
         const settings = userSettings[userId] || {};
         
-        // Skip idle users
         if (!settings.running && 
             (!userPendingBets[userId] || Object.keys(userPendingBets[userId]).length === 0) &&
             (!userSkippedBets[userId] || Object.keys(userSkippedBets[userId]).length === 0) &&
@@ -1006,32 +967,6 @@ async function winLoseChecker(bot) {
               userAllResults[userId].push(bigSmall);
               if (userAllResults[userId].length > 20) userAllResults[userId] = userAllResults[userId].slice(-20);
               
-              if (settings.strategy === "CYBER_SNIPER" && settings.cyber_sniper_state) {
-                const csState = settings.cyber_sniper_state;
-                if (settings.sniper_hit_count === undefined) settings.sniper_hit_count = 0;
-                if (settings.sniper_loss_count === undefined) settings.sniper_loss_count = 0;
-                if (isWin) {
-                  settings.sniper_hit_count++;
-                  settings.sniper_loss_count = 0;
-                  csState.hit_count = (csState.hit_count || 0) + 1;
-                  if (settings.sniper_hit_count >= SNIPER_MAX_HITS) {
-                    await terminateSniperSession(userId, 'CYBER SNIPER', bot, true);
-                    settings.running = false;
-                    csState.active = false;
-                  } else csState.active = false;
-                } else {
-                  settings.sniper_loss_count++;
-                  if (settings.sniper_loss_count >= SNIPER_MAX_LOSSES) {
-                    await terminateSniperSession(userId, 'CYBER SNIPER', bot, false);
-                    settings.running = false;
-                    csState.active = false;
-                  } else {
-                    csState.step++;
-                    if (csState.step >= 4) { settings.running = false; csState.active = false; }
-                  }
-                }
-              }
-
               if (settings.strategy === "COLOR_SNIPER" && settings.color_sniper_state) {
                 const csState = settings.color_sniper_state;
                 if (settings.sniper_hit_count === undefined) settings.sniper_hit_count = 0;
@@ -1071,6 +1006,20 @@ async function winLoseChecker(bot) {
                 if (!settings.alternate_state) settings.alternate_state = { last_result: null, skip_mode: false };
                 settings.alternate_state.last_result = bigSmall;
                 if (settings.alternate_state.skip_mode && isWin) settings.alternate_state.skip_mode = false;
+              }
+
+              if (settings.strategy === "LEO") {
+                updateLeoState(settings, bigSmall);
+              }
+
+              if (settings.strategy === "DREAM") {
+                updateDreamState(settings, isWin, number);
+              }
+
+              if (settings.strategy === "CHAT_GPT_V1") {
+                if (!userAILast10Results[userId]) userAILast10Results[userId] = [];
+                userAILast10Results[userId].push(bigSmall);
+                if (userAILast10Results[userId].length > 10) userAILast10Results[userId] = userAILast10Results[userId].slice(-10);
               }
               
               const entryLayer = settings.layer_limit || 1;
@@ -1194,6 +1143,20 @@ async function winLoseChecker(bot) {
                 settings.alternate_state.last_result = bigSmall;
                 if (settings.alternate_state.skip_mode && isWin) settings.alternate_state.skip_mode = false;
               }
+
+              if (settings.strategy === "LEO") {
+                updateLeoState(settings, bigSmall);
+              }
+
+              if (settings.strategy === "DREAM") {
+                updateDreamState(settings, isWin, number);
+              }
+
+              if (settings.strategy === "CHAT_GPT_V1") {
+                if (!userAILast10Results[userId]) userAILast10Results[userId] = [];
+                userAILast10Results[userId].push(bigSmall);
+                if (userAILast10Results[userId].length > 10) userAILast10Results[userId] = userAILast10Results[userId].slice(-10);
+              }
               
               if (settings.sl_layer && settings.sl_layer > 0 && userSLSkipWaitingForWin[userId] && isWin) {
                 userShouldSkipNext[userId] = false;
@@ -1306,21 +1269,9 @@ async function bettingWorker(userId, ctx, bot) {
   settings.current_layer = 0;
   settings.skip_betting = false;
   
-  if (settings.strategy === "CYBER_SNIPER") {
-    settings.cyber_sniper_state = { active: false, direction: null, sequence: [], step: 0, hit_count: 0, got_same_result: false };
-    userLastResults[userId] = [];
-  }
-  if (settings.strategy === "OP_PATTERN") settings.op_pattern_index = 0;
-  if (settings.strategy === "CUSTOM_DIGIT") settings.digit_mapping = DEFAULT_DIGIT_MAPPING;
-  if (settings.strategy === "ALINKAR") settings.alinkar_index = 0;
   if (settings.strategy === "COLOR_SNIPER") {
     settings.color_sniper_state = { active: false, step: 0, hit_count: 0, waiting_for_trigger: true };
     userLastResults[userId] = [];
-  }
-  if (settings.strategy === "POTATO_GRA") settings.potato_gra_last_login = Date.now();
-  if (settings.strategy === "TIME_WARP" && !settings.time_warp_pos) settings.time_warp_pos = 8;
-  
-  if (["CYBER_SNIPER", "COLOR_SNIPER"].includes(settings.strategy)) {
     settings.sniper_hit_count = 0;
     settings.sniper_loss_count = 0;
   }
@@ -1350,6 +1301,19 @@ async function bettingWorker(userId, ctx, bot) {
       settings.pattern_index = 0;
     }
     settings.pattern_index = 0;
+  }
+
+  if (settings.strategy === "LEO") {
+    settings.leo_state = { last_result: null, pattern_index: 0 };
+  }
+
+  if (settings.strategy === "DREAM") {
+    settings.dream_state = { first_bet: true, current_pattern: "", current_index: 0 };
+  }
+
+  if (settings.strategy === "CHAT_GPT_V1") {
+    userAILast10Results[userId] = [];
+    userAIRoundCount[userId] = 0;
   }
   
   if (!userLastResults[userId]) userLastResults[userId] = [];
@@ -1383,17 +1347,10 @@ async function bettingWorker(userId, ctx, bot) {
   let strategyText = settings.strategy === "TREND_FOLLOW" ? "Trend Follow" :
                      settings.strategy === "ALTERNATE" ? "Alternate" :
                      settings.strategy === "BS_ORDER" ? "Bs Order" :
-                     settings.strategy === "CYBER_SNIPER" ? "Cyber Sniper" :
-                     settings.strategy === "QUANTUM_CALC" ? "Quantum Calc" :
-                     settings.strategy === "TIME_WARP" ? "Time Warp" :
                      settings.strategy === "COLOR_SNIPER" ? "Color Sniper" :
-                     settings.strategy === "OP_PATTERN" ? "OP Pattern" :
-                     settings.strategy === "CUSTOM_DIGIT" ? "Custom Digit" :
-                     settings.strategy === "ALINKAR" ? "Alinkar" :
-                     settings.strategy === "OLDEST_RESULT" ? "Oldest Result" :
-                     settings.strategy === "POTATO_GRA" ? "Potato Gra" :
-                     settings.strategy === "DRAGON_FIRE" ? "Dragon Fire" :
-                     settings.strategy === "SUPER" ? "Super" :
+                     settings.strategy === "LEO" ? "🫟 LEO" :
+                     settings.strategy === "DREAM" ? "🦅 Dream" :
+                     settings.strategy === "CHAT_GPT_V1" ? "✮⋆˙ CHAT GPT V1" :
                      safeEscape(settings.strategy);
 
   if (settings.strategy === "TREND_FOLLOW") {
@@ -1433,28 +1390,9 @@ async function bettingWorker(userId, ctx, bot) {
   
   try {
     while (settings.running) {
-      if (settings.strategy === "OLDEST_RESULT" && settings.game_type === "TRX") {
-        settings.running = false;
-        await sendMessageWithRetry(ctx, `${EMOJI.ERROR} Configuration Error: OLDEST_RESULT disabled for TRX.`, makeMainKeyboard(true, isAdmin(userId)));
-        break;
-      }
-
       if (userWaitingForResult[userId]) { await new Promise(r => setTimeout(r, 1000)); continue; }
       if (userSkipResultWait[userId]) { await new Promise(r => setTimeout(r, 1000)); continue; }
 
-      if (settings.strategy === "POTATO_GRA" && userCredentials[userId]) {
-        const lastLoginTime = settings.potato_gra_last_login || Date.now();
-        if (Date.now() - lastLoginTime >= 30 * 60 * 1000) {
-          const creds = userCredentials[userId];
-          const { response: res, session: newSession } = await loginRequest(creds.phone, creds.password, PLATFORMS[creds.platform].baseUrl);
-          if (newSession) {
-            userSessions[userId] = newSession;
-            session = newSession;
-            settings.potato_gra_last_login = Date.now();
-          }
-        }
-      }
-      
       if (settings.virtual_mode) {
         currentBalance = userStats[userId].virtual_balance || settings.virtual_balance || 0;
       } else {
@@ -1529,33 +1467,30 @@ async function bettingWorker(userId, ctx, bot) {
       
       let ch, shouldSkip = false, skipReason = "";
       
-      if (settings.strategy === "CYBER_SNIPER") {
-        const prediction = getCyberSniperPrediction(userId);
-        ch = prediction.choice; shouldSkip = prediction.shouldSkip;
-        if (shouldSkip) skipReason = "(Waiting for 0 or 9)";
-      } else if (settings.strategy === "COLOR_SNIPER") {
+      if (settings.strategy === "COLOR_SNIPER") {
         const prediction = getColorSniperPrediction(userId);
         ch = prediction.choice; shouldSkip = prediction.shouldSkip;
         if (shouldSkip) skipReason = "(Waiting for 1 or 7)";
-      } else if (settings.strategy === "POTATO_GRA") {
-        const prediction = await getPotatoGraPrediction(userId, session, gameType);
-        ch = prediction.choice; shouldSkip = prediction.shouldSkip;
-      } else if (settings.strategy === "QUANTUM_CALC") ch = getQuantumCalcPrediction(userId);
-      else if (settings.strategy === "TIME_WARP") ch = getTimeWarpPrediction(userId);
-      else if (settings.strategy === "OP_PATTERN") ch = getOpPatternPrediction(userId).choice;
-      else if (settings.strategy === "CUSTOM_DIGIT") ch = getCustomDigitPrediction(userId).choice;
-      else if (settings.strategy === "OLDEST_RESULT") ch = (await getOldestResultPrediction(userId, session, gameType)).choice;
-      else if (settings.strategy === "ALINKAR") ch = getAlinkarPrediction(userId).choice;
-      else if (settings.strategy === "TREND_FOLLOW") {
+      } else if (settings.strategy === "TREND_FOLLOW") {
         const p = getTrendFollowPrediction(userId);
         ch = p.choice; shouldSkip = p.shouldSkip;
       } else if (settings.strategy === "ALTERNATE") {
         const p = getAlternatePrediction(userId);
         ch = p.choice; shouldSkip = p.shouldSkip;
-      } else if (settings.strategy === "BS_ORDER") ch = getBsOrderPrediction(userId).choice;
-      else if (settings.strategy === "DRAGON_FIRE") ch = getDragonFirePrediction(userId).choice;
-      else if (settings.strategy === "SUPER") ch = getSuperPrediction(userId).choice;
-      else ch = 'B';
+      } else if (settings.strategy === "BS_ORDER") {
+        ch = getBsOrderPrediction(userId).choice;
+      } else if (settings.strategy === "LEO") {
+        const p = await getLeoPrediction(userId, settings);
+        ch = p.prediction;
+      } else if (settings.strategy === "DREAM") {
+        const p = await getDreamPrediction(userId, settings);
+        ch = p.prediction;
+      } else if (settings.strategy === "CHAT_GPT_V1") {
+        const p = await getAIPrediction(userId, gameType);
+        ch = p.result;
+      } else {
+        ch = 'B';
+      }
       
       const selectType = getSelectMap(gameType, betType)[ch];
       if (selectType === undefined) { settings.consecutive_errors++; await new Promise(r => setTimeout(r, 2000)); continue; }
@@ -1650,12 +1585,16 @@ async function bettingWorker(userId, ctx, bot) {
     delete userSkipResultWait[userId];
     delete userSLSkipWaitingForWin[userId];
     
-    if (settings.strategy === "CYBER_SNIPER") delete settings.cyber_sniper_state;
     if (settings.strategy === "COLOR_SNIPER") delete settings.color_sniper_state;
-    if (settings.strategy === "TIME_WARP") delete settings.time_warp_pos;
     if (settings.strategy === "TREND_FOLLOW") { delete settings.trend_state; delete settings.color_trend_state; }
     if (settings.strategy === "ALTERNATE") delete settings.alternate_state;
     if (settings.strategy === "BS_ORDER") settings.pattern_index = 0;
+    if (settings.strategy === "LEO") delete settings.leo_state;
+    if (settings.strategy === "DREAM") delete settings.dream_state;
+    if (settings.strategy === "CHAT_GPT_V1") {
+      delete userAILast10Results[userId];
+      delete userAIRoundCount[userId];
+    }
     
     let totalProfit = 0, balanceText = "";
     if (settings.virtual_mode) {
@@ -1733,27 +1672,19 @@ function makeAdminPanelKeyboard(userId) {
 }
 
 function makeStrategyKeyboard(userId = null) {
-  const isTRX = userId && userSettings[userId]?.game_type === "TRX";
   if (userId && userSettings[userId] && userSettings[userId].bet_type === "COLOR") {
     return Markup.inlineKeyboard([
       [Markup.button.callback(`${EMOJI.TREND} TREND_FOLLOW`, "strategy:TREND_FOLLOW")],
       [Markup.button.callback(`🎯 COLOR SNIPER`, "strategy:COLOR_SNIPER")]
     ]);
   }
-  const keyboard = [
+  return Markup.inlineKeyboard([
     [Markup.button.callback(`${EMOJI.TREND} TREND_FOLLOW`, "strategy:TREND_FOLLOW"), Markup.button.callback(`${EMOJI.ALTERNATE} ALTERNATE`, "strategy:ALTERNATE")],
-    [Markup.button.callback(`${EMOJI.PATTERN} BS ORDER`, "strategy:BS_ORDER"), Markup.button.callback(`🤖 CYBER_SNIPER`, "strategy:CYBER_SNIPER")],
-    [Markup.button.callback(`🔮 QUANTUM_CALC`, "strategy:QUANTUM_CALC"), Markup.button.callback(`⏳ TIME_WARP`, "strategy:TIME_WARP")],
-    [Markup.button.callback(`🔥 OP PATTERN`, "strategy:OP_PATTERN"), Markup.button.callback(`🎲 DIGIT MAP`, "strategy:CUSTOM_DIGIT")],
-    [Markup.button.callback(`🥔 POTATO GRA`, "strategy:POTATO_GRA")],
-    [Markup.button.callback(`🐉 𝕯𝖗𝖆𝖓𝖌𝖔𝖓 𝕱𝖎𝖗𝖊`, "strategy:DRAGON_FIRE"), Markup.button.callback(`⚡ 𝔖𝔘𝔓𝔈ℜ`, "strategy:SUPER")]
-  ];
-  if (!isTRX) {
-    keyboard.push([Markup.button.callback(`🔗 ALINKAR`, "strategy:ALINKAR"), Markup.button.callback(`🕰 OLDEST RESULT`, "strategy:OLDEST_RESULT")]);
-  } else {
-    keyboard.push([Markup.button.callback(`🔗 ALINKAR`, "strategy:ALINKAR")]);
-  }
-  return Markup.inlineKeyboard(keyboard);
+    [Markup.button.callback(`${EMOJI.PATTERN} BS ORDER`, "strategy:BS_ORDER")],
+    [Markup.button.callback(`🫟 LEO`, "strategy:LEO")],
+    [Markup.button.callback(`🦅 Dream`, "strategy:DREAM")],
+    [Markup.button.callback(`✮⋆˙ CHAT GPT V1`, "strategy:CHAT_GPT_V1")]
+  ]);
 }
 
 function makeBetTypeKeyboard() {
@@ -2023,11 +1954,21 @@ async function callbackQueryHandler(ctx) {
       else settings.trend_state = { last_result: null, skip_mode: false };
     }
     if (settings.strategy === "ALTERNATE") settings.alternate_state = { last_result: null, skip_mode: false };
-    if (settings.strategy === "CYBER_SNIPER") settings.cyber_sniper_state = { active: false, direction: null, sequence: [], step: 0, hit_count: 0, got_same_result: false };
-    if (settings.strategy === "COLOR_SNIPER") settings.color_sniper_state = { active: false, step: 0, hit_count: 0, waiting_for_trigger: true };
-    if (settings.strategy === "TIME_WARP" && !settings.time_warp_pos) settings.time_warp_pos = 8;
-    if (settings.strategy === "POTATO_GRA") settings.potato_gra_last_login = Date.now();
-    if (["CYBER_SNIPER", "COLOR_SNIPER"].includes(settings.strategy)) { settings.sniper_hit_count = 0; settings.sniper_loss_count = 0; }
+    if (settings.strategy === "COLOR_SNIPER") {
+      settings.color_sniper_state = { active: false, step: 0, hit_count: 0, waiting_for_trigger: true };
+      settings.sniper_hit_count = 0;
+      settings.sniper_loss_count = 0;
+    }
+    if (settings.strategy === "LEO") {
+      settings.leo_state = { last_result: null, pattern_index: 0 };
+    }
+    if (settings.strategy === "DREAM") {
+      settings.dream_state = { first_bet: true, current_pattern: "", current_index: 0 };
+    }
+    if (settings.strategy === "CHAT_GPT_V1") {
+      userAILast10Results[userId] = [];
+      userAIRoundCount[userId] = 0;
+    }
     
     delete userSkippedBets[userId];
     userShouldSkipNext[userId] = false;
@@ -2065,11 +2006,6 @@ async function callbackQueryHandler(ctx) {
   
   if (data.startsWith("strategy:")) {
     const strategy = data.split(":")[1];
-    if (strategy === "OLDEST_RESULT" && userSettings[userId].game_type === "TRX") {
-      await sendMessageWithRetry(ctx, `${EMOJI.ERROR} OLDEST_RESULT not supported for TRX.`);
-      await safeDeleteMessage(ctx);
-      return;
-    }
     userSettings[userId].strategy = strategy;
     
     if (strategy === "BS_ORDER") {
@@ -2077,22 +2013,21 @@ async function callbackQueryHandler(ctx) {
       await sendMessageWithRetry(ctx, `${EMOJI.PATTERN} ${STYLE.BOLD('BS Pattern Settings')}\n\n${EMOJI.INFO} Enter BS pattern (B and S only):\n\n${STYLE.CODE('Example: BSBSSBBS')}`);
     } else if (strategy === "TREND_FOLLOW") {
       const betType = userSettings[userId].bet_type || "BS";
-      if (betType === "COLOR") await sendMessageWithRetry(ctx, `${EMOJI.SUCCESS} ${STYLE.BOLD('Strategy: Trend Follow (Color Mode)')}`, makeMainKeyboard(true, isAdmin(userId)));
-      else await sendMessageWithRetry(ctx, `${EMOJI.TREND} ${STYLE.BOLD('Trend Follow Settings')}\n\n${EMOJI.INFO} Select BS/SB Wait Count:`, makeBSWaitCountKeyboard());
+      if (betType === "COLOR") {
+        await sendMessageWithRetry(ctx, `${EMOJI.SUCCESS} ${STYLE.BOLD('Strategy: Trend Follow (Color Mode)')}`, makeMainKeyboard(true, isAdmin(userId)));
+      } else {
+        await sendMessageWithRetry(ctx, `${EMOJI.TREND} ${STYLE.BOLD('Trend Follow Settings')}\n\n${EMOJI.INFO} Select BS/SB Wait Count:`, makeBSWaitCountKeyboard());
+      }
     } else if (strategy === "ALTERNATE") {
       await sendMessageWithRetry(ctx, `${EMOJI.ALTERNATE} ${STYLE.BOLD('Alternate Settings')}\n\n${EMOJI.INFO} Select BB/SS Wait Count:`, makeBBWaitCountKeyboard());
-    } else if (strategy === "CYBER_SNIPER") {
-      await sendMessageWithRetry(ctx, `🤖 ${STYLE.BOLD('CYBER_SNIPER Activated')}\n\n${EMOJI.INFO} • Terminates after ${SNIPER_MAX_HITS} hits`, makeMainKeyboard(true, isAdmin(userId)));
-    } else if (strategy === "POTATO_GRA") {
-      await sendMessageWithRetry(ctx, `🥔 ${STYLE.BOLD('POTATO GRA Activated')}\n\n${EMOJI.INFO} • No pattern → Skip`, makeMainKeyboard(true, isAdmin(userId)));
     } else if (strategy === "COLOR_SNIPER") {
       await sendMessageWithRetry(ctx, `🎯 ${STYLE.BOLD('COLOR_SNIPER Activated')}\n\n${EMOJI.INFO} • Terminates after ${SNIPER_MAX_HITS} hits`, makeMainKeyboard(true, isAdmin(userId)));
-    } else if (strategy === "DRAGON_FIRE") {
-      await sendMessageWithRetry(ctx, `🐉 ${STYLE.BOLD('𝕯𝖗𝖆𝖓𝖌𝖔𝖓 𝕱𝖎𝖗𝖊 Activated')}`, makeMainKeyboard(true, isAdmin(userId)));
-    } else if (strategy === "SUPER") {
-      await sendMessageWithRetry(ctx, `⚡ ${STYLE.BOLD('𝔖𝔘𝔓𝔈ℜ Activated')}`, makeMainKeyboard(true, isAdmin(userId)));
-    } else {
-      await sendMessageWithRetry(ctx, `${EMOJI.SUCCESS} ${STYLE.BOLD(`Strategy: ${strategy}`)}`, makeMainKeyboard(true, isAdmin(userId)));
+    } else if (strategy === "LEO") {
+      await sendMessageWithRetry(ctx, `🫟 ${STYLE.BOLD('LEO Activated')}\n\n${EMOJI.INFO} • Dual Pattern (BIG/SMALL)`, makeMainKeyboard(true, isAdmin(userId)));
+    } else if (strategy === "DREAM") {
+      await sendMessageWithRetry(ctx, `🦅 ${STYLE.BOLD('Dream Activated')}\n\n${EMOJI.INFO} • Number-based Pattern (0-9)`, makeMainKeyboard(true, isAdmin(userId)));
+    } else if (strategy === "CHAT_GPT_V1") {
+      await sendMessageWithRetry(ctx, `✮⋆˙ ${STYLE.BOLD('CHAT GPT V1 Activated')}\n\n${EMOJI.INFO} • AI-based Pattern Detection\n${EMOJI.INFO} • Last 10 Results Analysis`, makeMainKeyboard(true, isAdmin(userId)));
     }
     saveUserSettings();
     await safeDeleteMessage(ctx);
@@ -2347,7 +2282,6 @@ async function textMessageHandler(ctx) {
   const isAdminUser = isAdmin(userId);
   const buttonText = rawText.trim();
 
-  // Platform selection
   for (const [platformKey, platform] of Object.entries(PLATFORMS)) {
     if (buttonText === `${platform.color} ${platform.name}`) {
       userState[userId] = { state: "PLATFORM_SELECTED", platform: platformKey };
@@ -2466,7 +2400,7 @@ async function textMessageHandler(ctx) {
       `⚠️ *အရေးကြီး:* Phone နဲ့ Password ကို လိုင်းနှစ်လိုင်းနဲ့ ပို့ပါ\n${STYLE.CODE('9782663611')}\n${STYLE.CODE('Password123')}\n\n${STYLE.SEPARATOR}\n\n` +
       `*၂။ 🤹 Bet_Wrager သတ်မှတ်နည်း*\n${STYLE.ITEM('Bet_Wrager Button ကို နှိပ်ပါ')}\n${STYLE.ITEM('ငွေပမာဏတွေ ရိုက်ပါ')}\n${STYLE.LAST_ITEM('ဥပမာ: 100, 200, 500')}\n\n${STYLE.SEPARATOR}\n\n` +
       `*၃။ 🎯 Game Type ရွေးနည်း*\n${STYLE.ITEM('Game Type Button ကို နှိပ်ပါ')}\n${STYLE.ITEM('WINGO သို့ TRX ရွေးပါ')}\n${STYLE.LAST_ITEM('WINGO မှာ 30s, 1m, 3m, 5m ရှိတယ်')}\n\n${STYLE.SEPARATOR}\n\n` +
-      `*၄။ 🧬 Strategy ရွေးနည်း*\n${STYLE.ITEM('Strategy Button ကို နှိပ်ပါ')}\n${STYLE.ITEM('ကြိုက်တဲ့ Strategy ရွေးပါ')}\n${STYLE.LAST_ITEM('အကြံပြု: 𝔖𝔘𝔓𝔈ℜ, 𝕯𝖗𝖆𝖓𝖌𝖔𝖓 𝕱𝖎𝖗𝖊')}\n\n${STYLE.SEPARATOR}\n\n` +
+      `*၄။ 🧬 Strategy ရွေးနည်း*\n${STYLE.ITEM('Strategy Button ကို နှိပ်ပါ')}\n${STYLE.ITEM('ကြိုက်တဲ့ Strategy ရွေးပါ')}\n${STYLE.LAST_ITEM('TREND_FOLLOW, ALTERNATE, BS_ORDER, LEO, Dream, CHAT GPT V1')}\n\n${STYLE.SEPARATOR}\n\n` +
       `*၅။ ▶️ Bot စတင်နည်း*\n${STYLE.ITEM('Activate Button ကို နှိပ်ပါ')}\n${STYLE.ITEM('Bot က Auto လောင်းပါမယ်')}\n${STYLE.LAST_ITEM('ရပ်ချင်ရင် Deactivate နှိပ်ပါ')}\n\n${STYLE.SEPARATOR}\n\n` +
       `*၆။ 🩰 Risk Management*\n${STYLE.ITEM('Profit Target — အမြတ်ရင် ရပ်')}\n${STYLE.ITEM('Stop Loss — အရှုံးများရင် ရပ်')}\n${STYLE.ITEM('Entry Layer — စတင်ချိန်')}\n${STYLE.LAST_ITEM('SL Layer — ရှုံးရင် ရပ်ချိန်')}\n\n${STYLE.SEPARATOR}\n\n` +
       `*၇။ 📊 Daily Report*\n${STYLE.ITEM('ဒီနေ့ Win/Loss ကြည့်နိုင်')}\n${STYLE.ITEM('Win Rate % ကြည့်နိုင်')}\n${STYLE.LAST_ITEM('Profit/Loss ကြည့်နိုင်')}\n\n${STYLE.SEPARATOR}\n\n` +
@@ -2551,11 +2485,21 @@ async function textMessageHandler(ctx) {
       else settings.trend_state = { last_result: null, skip_mode: false };
     }
     if (settings.strategy === "ALTERNATE") settings.alternate_state = { last_result: null, skip_mode: false };
-    if (settings.strategy === "CYBER_SNIPER") settings.cyber_sniper_state = { active: false, direction: null, sequence: [], step: 0, hit_count: 0, got_same_result: false };
-    if (settings.strategy === "COLOR_SNIPER") settings.color_sniper_state = { active: false, step: 0, hit_count: 0, waiting_for_trigger: true };
-    if (settings.strategy === "TIME_WARP" && !settings.time_warp_pos) settings.time_warp_pos = 8;
-    if (settings.strategy === "POTATO_GRA") settings.potato_gra_last_login = Date.now();
-    if (["CYBER_SNIPER", "COLOR_SNIPER"].includes(settings.strategy)) { settings.sniper_hit_count = 0; settings.sniper_loss_count = 0; }
+    if (settings.strategy === "COLOR_SNIPER") {
+      settings.color_sniper_state = { active: false, step: 0, hit_count: 0, waiting_for_trigger: true };
+      settings.sniper_hit_count = 0;
+      settings.sniper_loss_count = 0;
+    }
+    if (settings.strategy === "LEO") {
+      settings.leo_state = { last_result: null, pattern_index: 0 };
+    }
+    if (settings.strategy === "DREAM") {
+      settings.dream_state = { first_bet: true, current_pattern: "", current_index: 0 };
+    }
+    if (settings.strategy === "CHAT_GPT_V1") {
+      userAILast10Results[userId] = [];
+      userAIRoundCount[userId] = 0;
+    }
     
     delete userSkippedBets[userId];
     userShouldSkipNext[userId] = false;
@@ -2578,9 +2522,13 @@ async function textMessageHandler(ctx) {
     
     if (settings.strategy === "TREND_FOLLOW") { delete settings.trend_state; delete settings.color_trend_state; }
     if (settings.strategy === "ALTERNATE") delete settings.alternate_state;
-    if (settings.strategy === "CYBER_SNIPER") delete settings.cyber_sniper_state;
     if (settings.strategy === "COLOR_SNIPER") delete settings.color_sniper_state;
-    if (settings.strategy === "TIME_WARP") delete settings.time_warp_pos;
+    if (settings.strategy === "LEO") delete settings.leo_state;
+    if (settings.strategy === "DREAM") delete settings.dream_state;
+    if (settings.strategy === "CHAT_GPT_V1") {
+      delete userAILast10Results[userId];
+      delete userAIRoundCount[userId];
+    }
     
     let totalProfit = 0;
     let balanceText = "";
