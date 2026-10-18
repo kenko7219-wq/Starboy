@@ -5,6 +5,30 @@ const https = require('https');
 const http = require('http');
 const axios = require('axios');
 
+// ==========================================
+// Button Color Styling (Monkey Patch)
+// ==========================================
+function getButtonStyle(data) {
+  if (!data) return null;
+  if (data.startsWith('restart_bot:')) return 'success';
+  if (data.startsWith('manual_confirm_')) return 'success';
+  if (data === 'manual_cancel') return 'danger';
+  if (data === 'mode:real') return 'success';
+  if (data === 'sl_layer:0' || data === 'bs_wait_count:0' || data === 'bb_wait_count:0') return 'danger';
+  if (/^(strategy|bet_type|game_type|mode|betting_strategy|entry_layer|sl_layer|bs_wait_count|bb_wait_count):/.test(data)) return 'primary';
+  if (/^manual_(amt|mult|res_page)_/.test(data)) return 'primary';
+  return null;
+}
+
+const _origCallback = Markup.button.callback;
+Markup.button.callback = (text, data, hide) => {
+  const b = _origCallback(text, data, hide);
+  const style = getButtonStyle(data);
+  if (style) b.style = style;
+  return b;
+};
+// ==========================================
+
 const logging = {
   info: (msg) => console.log(`[INFO] ${new Date().toISOString()} - ${msg}`),
   warning: (msg) => console.log(`[WARN] ${new Date().toISOString()} - ${msg}`),
@@ -1624,50 +1648,61 @@ async function bettingWorker(userId, ctx, bot) {
 // ===== KEYBOARDS =====
 function makePlatformKeyboard() {
   return Markup.keyboard([
-    [`${PLATFORMS["6LOTTERY"].color} ${PLATFORMS["6LOTTERY"].name}`,
-     `${PLATFORMS["CKLOTTERY"].color} ${PLATFORMS["CKLOTTERY"].name}`]
+    [{ text: `${PLATFORMS["6LOTTERY"].color} ${PLATFORMS["6LOTTERY"].name}`, style: 'primary' },
+     { text: `${PLATFORMS["CKLOTTERY"].color} ${PLATFORMS["CKLOTTERY"].name}`, style: 'primary' }]
   ]).resize().oneTime(false);
 }
 
 function makeMainKeyboard(loggedIn = false, isAdminUser = false) {
   if (!loggedIn) {
     return Markup.keyboard([
-      [`${EMOJI.LOGIN} Login`, `📖 Tutorial`]
+      [{ text: `${EMOJI.LOGIN} Login`, style: 'success' }, 
+       { text: `📖 Tutorial`, style: 'primary' }]
     ]).resize().oneTime(false);
   }
   
   const keyboard = [
-    [`${EMOJI.START} Activate`, `${EMOJI.STOP} Deactivate`],
-    [`${EMOJI.BETWRAGER} Bet_Wrager`, `${EMOJI.GAME} Game Mode`],
-    [`${EMOJI.TARGET} Game Type`, `${EMOJI.COLOR} Bet Type`, `${EMOJI.STRATEGY} Strategy`],
-    [`${EMOJI.SETTINGS} Betting Settings`, `${EMOJI.RISK} Risk Management`],
-    [`${EMOJI.BET} Manual Bet`, `${EMOJI.INFO} Account Info`, `${EMOJI.LOGOUT} Re-Login`],
-    [`📅 Daily Report`, `📖 Tutorial`]
+    [{ text: `${EMOJI.START} Activate`, style: 'success' },
+     { text: `${EMOJI.STOP} Deactivate`, style: 'danger' }],
+    [{ text: `${EMOJI.BETWRAGER} Bet_Wrager`, style: 'primary' },
+     { text: `${EMOJI.GAME} Game Mode`, style: 'primary' }],
+    [{ text: `${EMOJI.TARGET} Game Type`, style: 'primary' }, 
+     { text: `${EMOJI.COLOR} Bet Type`, style: 'primary' }, 
+     { text: `${EMOJI.STRATEGY} Strategy`, style: 'primary' }],
+    [{ text: `${EMOJI.SETTINGS} Betting Settings`, style: 'primary' }, 
+     { text: `${EMOJI.RISK} Risk Management`, style: 'primary' }],
+    [{ text: `${EMOJI.BET} Manual Bet`, style: 'primary' }, 
+     { text: `${EMOJI.INFO} Account Info`, style: 'primary' }, 
+     { text: `${EMOJI.LOGOUT} Re-Login`, style: 'danger' }],
+    [{ text: `📅 Daily Report`, style: 'primary' }, 
+     { text: `📖 Tutorial`, style: 'primary' }]
   ];
   
-  if (isAdminUser) keyboard.push([`${EMOJI.ADMIN} Admin Panel`]);
+  if (isAdminUser) keyboard.push([{ text: `${EMOJI.ADMIN} Admin Panel`, style: 'primary' }]);
   return Markup.keyboard(keyboard).resize().oneTime(false);
 }
 
 function makeRiskManagementSubmenu() {
   return Markup.keyboard([
-    [`${EMOJI.TARGET} Profit Target`, `${EMOJI.STOP} Stop Loss`],
-    [`${EMOJI.LAYER} Entry Layer`, `${EMOJI.WARNING} Bet SL`],
-    [`${EMOJI.BACK} Back`]
+    [{ text: `${EMOJI.TARGET} Profit Target`, style: 'primary' }, 
+     { text: `${EMOJI.STOP} Stop Loss`, style: 'danger' }],
+    [{ text: `${EMOJI.LAYER} Entry Layer`, style: 'primary' }, 
+     { text: `${EMOJI.WARNING} Bet SL`, style: 'danger' }],
+    [{ text: `${EMOJI.BACK} Back`, style: 'primary' }]
   ]).resize().oneTime(false);
 }
 
 function makeAdminPanelKeyboard(userId) {
   const isOwner = userId === ADMIN_ID;
   const rows = [];
-  rows.push([`${EMOJI.ADD} Add User`, `${EMOJI.REMOVE} Remove User`]);
-  rows.push([`${EMOJI.STATS} User Stats`, `${EMOJI.MENU} Allowed IDs`]);
-  rows.push([`${EMOJI.BROADCAST} Broadcast`]);
+  rows.push([{ text: `${EMOJI.ADD} Add User`, style: 'success' }, { text: `${EMOJI.REMOVE} Remove User`, style: 'danger' }]);
+  rows.push([{ text: `${EMOJI.STATS} User Stats`, style: 'primary' }, { text: `${EMOJI.MENU} Allowed IDs`, style: 'primary' }]);
+  rows.push([{ text: `${EMOJI.BROADCAST} Broadcast`, style: 'primary' }]);
   if (isOwner) {
-    rows.push([`👥 Add Admin`, `❌ Remove Admin`]);
-    rows.push([`📋 List Admins`]);
+    rows.push([{ text: `👥 Add Admin`, style: 'success' }, { text: `❌ Remove Admin`, style: 'danger' }]);
+    rows.push([{ text: `📋 List Admins`, style: 'primary' }]);
   }
-  rows.push([`${EMOJI.MENU} Main Menu`]);
+  rows.push([{ text: `${EMOJI.MENU} Main Menu`, style: 'primary' }]);
   return Markup.keyboard(rows).resize().oneTime(false);
 }
 
@@ -1758,11 +1793,16 @@ function makeModeSelectionKeyboard() {
 
 function makeManualBetMenuKeyboard() {
   return Markup.keyboard([
-    [`${EMOJI.RESULT} BIG`, `${EMOJI.RESULT} SMALL`],
-    [`🟢 GREEN`, `🔴 RED`, `🟣 VIOLET`],
-    [`${EMOJI.RESULTSBS} Game Results`, `${EMOJI.BET} My Bets`],
-    [`${EMOJI.BALANCE} My Balance`, `${EMOJI.GAME} Game Type`],
-    [`${EMOJI.BACK} Back`]
+    [{ text: `${EMOJI.RESULT} BIG`, style: 'primary' }, 
+     { text: `${EMOJI.RESULT} SMALL`, style: 'primary' }],
+    [{ text: `🟢 GREEN`, style: 'success' }, 
+     { text: `🔴 RED`, style: 'danger' }, 
+     { text: `🟣 VIOLET`, style: 'primary' }],
+    [{ text: `${EMOJI.RESULTSBS} Game Results`, style: 'primary' }, 
+     { text: `${EMOJI.BET} My Bets`, style: 'primary' }],
+    [{ text: `${EMOJI.BALANCE} My Balance`, style: 'primary' }, 
+     { text: `${EMOJI.GAME} Game Type`, style: 'primary' }],
+    [{ text: `${EMOJI.BACK} Back`, style: 'primary' }]
   ]).resize().oneTime(false);
 }
 
@@ -2287,7 +2327,7 @@ async function textMessageHandler(ctx) {
       userState[userId] = { state: "PLATFORM_SELECTED", platform: platformKey };
       await sendMessageWithRetry(ctx,
         `${platform.color} ${STYLE.BOLD(`Selected: ${platform.name}`)}\n\n${EMOJI.LOGIN} Please login using the format:\n\n${STYLE.CODE('phone')}\n${STYLE.CODE('password')}`,
-        Markup.keyboard([[`${EMOJI.BACK} Back`]]).resize().oneTime(false)
+        Markup.keyboard([[{ text: `${EMOJI.BACK} Back`, style: 'primary' }]]).resize().oneTime(false)
       );
       return;
     }
@@ -2886,6 +2926,22 @@ function main() {
   
   bot.launch().then(() => {
     logging.info('🚀 Auto Bet Bot (6LOTTERY + CKLOTTERY) started successfully');
+    
+    // Auto-Resume Betting Logic (Server Restart ဖြစ်ရင် ပြန်လောင်းပေးရန်)
+    setTimeout(() => {
+      for (const [userId, settings] of Object.entries(userSettings)) {
+        if (settings.running && userSessions[userId]) {
+          logging.info(`🔄 Auto-resuming betting for user ${userId}`);
+          const mockCtx = {
+            reply: async (text, options) => {
+              try { await bot.telegram.sendMessage(userId, text, options); } catch(e) {}
+            }
+          };
+          bettingWorker(userId, mockCtx, bot);
+        }
+      }
+    }, 5000);
+
   }).catch(error => {
     logging.error(`❌ Bot failed to start: ${error.message}`);
   });
@@ -2913,4 +2969,4 @@ function main() {
 
 if (require.main === module) {
   main();
-}
+} 
