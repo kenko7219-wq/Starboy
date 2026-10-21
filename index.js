@@ -284,7 +284,7 @@ function signMd5(data) {
 
 function computeUnitAmount(amt) {
   if (amt <= 0) return 1;
-  const amtStr = String(amt);
+  const amtStr = Math.floor(amt).toString();
   const trailingZeros = amtStr.length - amtStr.replace(/0+$/, '').length;
   if (trailingZeros >= 4) return 10000;
   if (trailingZeros === 3) return 1000;
@@ -332,19 +332,28 @@ function computeBetDetails(desiredAmount) {
 function calculateBetAmount(settings, currentBalance) {
   const bettingStrategy = settings.betting_strategy || "Martingale";
   const betSizes = settings.bet_sizes || [100];
-  const minBetSize = Math.min(...betSizes);
+  
+  let index = 0;
   if (bettingStrategy === "D'Alembert") {
     if (betSizes.length > 1) throw new Error("D'Alembert requires only ONE Bet_Wrager");
-    const unitSize = betSizes[0];
+    const unitSize = typeof betSizes[0] === 'number' ? betSizes[0] : 100;
     let units = settings.dalembert_units || 1;
-    const { amount: validAmount, adjustedUnits } = getValidDalembertBetAmount(unitSize, units, currentBalance, minBetSize);
+    const { amount: validAmount, adjustedUnits } = getValidDalembertBetAmount(unitSize, units, currentBalance, unitSize);
     if (adjustedUnits !== units) settings.dalembert_units = adjustedUnits;
     return validAmount;
   } else if (bettingStrategy === "Custom") {
-    return betSizes[Math.min(settings.custom_index || 0, betSizes.length - 1)];
+    index = Math.min(settings.custom_index || 0, betSizes.length - 1);
   } else {
-    return betSizes[Math.min(settings.martin_index || 0, betSizes.length - 1)];
+    index = Math.min(settings.martin_index || 0, betSizes.length - 1);
   }
+
+  let size = betSizes[index];
+  if (size === 'ALL IN') {
+    return Math.floor(currentBalance);
+  } else if (size === 0) {
+    return 0;
+  }
+  return size;
 }
 
 function updateBettingStrategy(settings, isWin, betAmount) {
@@ -1136,7 +1145,7 @@ async function winLoseChecker(bot) {
           for (const [period, betInfo] of Object.entries(userSkippedBets[userId])) {
             const settled = data.find(item => item.issueNumber === period);
             if (settled && settled.number) {
-              const [betChoice, isVirtual] = betInfo;
+              const [betChoice, isVirtual, isZeroSkip] = betInfo;
               const number = parseInt(settled.number || "0") % 10;
               const bigSmall = number >= 5 ? "B" : "S";
               const color = numberToColor(number);
@@ -1151,6 +1160,8 @@ async function winLoseChecker(bot) {
               userAllResults[userId].push(bigSmall);
               if (userAllResults[userId].length > 20) userAllResults[userId] = userAllResults[userId].slice(-20);
               
+              // [FIXED] Strategy state update should happen even if it's a 0 skip, 
+              // because the game result still happened and the bot needs to track the trend.
               if (settings.strategy === "TREND_FOLLOW") {
                 if (betType === "COLOR") {
                   if (!settings.color_trend_state) settings.color_trend_state = { last_result: null };
@@ -1182,15 +1193,18 @@ async function winLoseChecker(bot) {
                 if (userAILast10Results[userId].length > 10) userAILast10Results[userId] = userAILast10Results[userId].slice(-10);
               }
               
-              if (settings.sl_layer && settings.sl_layer > 0 && userSLSkipWaitingForWin[userId] && isWin) {
-                userShouldSkipNext[userId] = false;
-                settings.skip_betting = false;
-                settings.consecutive_losses = 0;
-                delete userSLSkipWaitingForWin[userId];
-                const bettingStrategy = settings.betting_strategy || "Martingale";
-                if (bettingStrategy === "Martingale" || bettingStrategy === "Anti-Martingale") settings.martin_index = settings.original_martin_index || 0;
-                else if (bettingStrategy === "D'Alembert") settings.dalembert_units = settings.original_dalembert_units || 1;
-                else if (bettingStrategy === "Custom") settings.custom_index = settings.original_custom_index || 0;
+              // [FIXED] Only reset SL skip waiting if it was NOT a zero skip. 
+              if (!isZeroSkip) {
+                if (settings.sl_layer && settings.sl_layer > 0 && userSLSkipWaitingForWin[userId] && isWin) {
+                  userShouldSkipNext[userId] = false;
+                  settings.skip_betting = false;
+                  settings.consecutive_losses = 0;
+                  delete userSLSkipWaitingForWin[userId];
+                  const bettingStrategy = settings.betting_strategy || "Martingale";
+                  if (bettingStrategy === "Martingale" || bettingStrategy === "Anti-Martingale") settings.martin_index = settings.original_martin_index || 0;
+                  else if (bettingStrategy === "D'Alembert") settings.dalembert_units = settings.original_dalembert_units || 1;
+                  else if (bettingStrategy === "Custom") settings.custom_index = settings.original_custom_index || 0;
+                }
               }
               
               let resultText;
@@ -1439,22 +1453,15 @@ async function bettingWorker(userId, ctx, bot) {
         break;
       }
       
-      const minBetSize = Math.min(...betSizes);
+      // [FIXED] Restored the Low Balance Check logic
+      const validSizes = betSizes.filter(s => typeof s === 'number' && s > 0);
+      const minBetSize = validSizes.length > 0 ? Math.min(...validSizes) : 10;
+      
       if (currentBalance < minBetSize) {
         const message = `${EMOJI.WARNING} ${STYLE.BOLD('Low Balance!')}\n${STYLE.SEPARATOR}\n${STYLE.ITEM(`Current: ${currentBalance.toFixed(2)} Ks`)}\n${STYLE.LAST_ITEM(`Minimum: ${minBetSize} Ks`)}`;
         await sendMessageWithRetry(ctx, message, makeMainKeyboard(true, isAdmin(userId)));
         settings.running = false;
         break;
-      }
-      
-      const balanceWarningThreshold = minBetSize * 3;
-      const now = Date.now();
-      const lastWarning = userBalanceWarnings[userId] || 0;
-      
-      if (currentBalance < balanceWarningThreshold && currentBalance >= minBetSize && (now - lastWarning > 60000)) {
-        const warningMessage = `${EMOJI.WARNING} ${STYLE.BOLD('Balance Warning!')}\n${STYLE.SEPARATOR}\n${STYLE.ITEM(`Current: ${currentBalance.toFixed(2)} Ks`)}\n${STYLE.LAST_ITEM(`Minimum: ${minBetSize} Ks`)}`;
-        await sendMessageWithRetry(ctx, warningMessage);
-        userBalanceWarnings[userId] = now;
       }
       
       let issueRes;
@@ -1541,10 +1548,10 @@ async function bettingWorker(userId, ctx, bot) {
       const gameId = `${EMOJI.GAME} ${gameType} : ${currentIssue}`;
       
       if (shouldSkip) {
-        const betMsg = `${EMOJI.SKIP} SKIPPING\n\n${safeEscape(gameId)}\n${EMOJI.STRATEGY} Strategy: ${strategyText}`;
+        const betMsg = `${EMOJI.SKIP} SKIPPING ${skipReason ? `(${skipReason})` : ''}\n\n${safeEscape(gameId)}\n${EMOJI.STRATEGY} Strategy: ${strategyText}`;
         await sendMessageWithRetry(ctx, betMsg);
         if (!userSkippedBets[userId]) userSkippedBets[userId] = {};
-        userSkippedBets[userId][currentIssue] = [ch, settings.virtual_mode];
+        userSkippedBets[userId][currentIssue] = [ch, settings.virtual_mode, false];
         userSkipResultWait[userId] = currentIssue;
         let resultAvailable = false, waitAttempts = 0;
         while (!resultAvailable && waitAttempts < 60 && settings.running) {
@@ -1562,10 +1569,39 @@ async function bettingWorker(userId, ctx, bot) {
           break;
         }
         
+        if (desiredAmount === 0) {
+          const betMsg = `${EMOJI.SKIP} SKIPPING (Bet_Wrager 0)\n\n${safeEscape(gameId)}\n${EMOJI.STRATEGY} Strategy: ${strategyText}`;
+          await sendMessageWithRetry(ctx, betMsg);
+          if (!userSkippedBets[userId]) userSkippedBets[userId] = {};
+          userSkippedBets[userId][currentIssue] = [ch, settings.virtual_mode, true];
+          userSkipResultWait[userId] = currentIssue;
+          
+          if (settings.betting_strategy === "Martingale") {
+            settings.martin_index = Math.min((settings.martin_index || 0) + 1, betSizes.length - 1);
+          } else if (settings.betting_strategy === "Anti-Martingale") {
+            settings.martin_index = 0;
+          } else if (settings.betting_strategy === "Custom") {
+            settings.custom_index = Math.min((settings.custom_index || 0) + 1, betSizes.length - 1);
+          }
+
+          let resultAvailable = false, waitAttempts = 0;
+          while (!resultAvailable && waitAttempts < 60 && settings.running) {
+            await new Promise(r => setTimeout(r, 1000));
+            if (!userSkippedBets[userId] || !userSkippedBets[userId][currentIssue]) resultAvailable = true;
+            waitAttempts++;
+          }
+          if (!resultAvailable && userSkipResultWait[userId] === currentIssue) delete userSkipResultWait[userId];
+          
+          settings.last_issue = currentIssue;
+          await new Promise(r => setTimeout(r, 1000));
+          continue;
+        }
+        
         const { unitAmount, betCount, actualAmount } = computeBetDetails(desiredAmount);
         
         if (actualAmount === 0 || currentBalance < actualAmount) {
-          await sendMessageWithRetry(ctx, `${EMOJI.ERROR} Invalid bet amount or insufficient balance.`, makeMainKeyboard(true, isAdmin(userId)));
+          const message = `${EMOJI.WARNING} ${STYLE.BOLD('Low Balance!')}\n${STYLE.SEPARATOR}\n${STYLE.ITEM(`Current: ${currentBalance.toFixed(2)} Ks`)}\n${STYLE.LAST_ITEM(`Required: ${actualAmount} Ks`)}`;
+          await sendMessageWithRetry(ctx, message, makeMainKeyboard(true, isAdmin(userId)));
           settings.running = false;
           break;
         }
@@ -2438,7 +2474,7 @@ async function textMessageHandler(ctx) {
       `📖 *TUTORIAL — အသုံးပြုနည်း*\n${STYLE.SEPARATOR}\n\n` +
       `*၁။ 🔐 Login လုပ်နည်း*\n${STYLE.ITEM('Login Button ကို နှိပ်ပါ')}\n${STYLE.ITEM('Site ၂ ခု ထဲက တစ်ခု ရွေးပါ')}\n${STYLE.ITEM('Phone နံပါတ် ရိုက်ပါ')}\n${STYLE.ITEM('Password ရိုက်ပါ')}\n${STYLE.LAST_ITEM('ပြီးရင် Login လုပ်ပါမယ်')}\n\n` +
       `⚠️ *အရေးကြီး:* Phone နဲ့ Password ကို လိုင်းနှစ်လိုင်းနဲ့ ပို့ပါ\n${STYLE.CODE('9782663611')}\n${STYLE.CODE('Password123')}\n\n${STYLE.SEPARATOR}\n\n` +
-      `*၂။ 🤹 Bet_Wrager သတ်မှတ်နည်း*\n${STYLE.ITEM('Bet_Wrager Button ကို နှိပ်ပါ')}\n${STYLE.ITEM('ငွေပမာဏတွေ ရိုက်ပါ')}\n${STYLE.LAST_ITEM('ဥပမာ: 100, 200, 500')}\n\n${STYLE.SEPARATOR}\n\n` +
+      `*၂။ 🤹 Bet_Wrager သတ်မှတ်နည်း*\n${STYLE.ITEM('Bet_Wrager Button ကို နှိပ်ပါ')}\n${STYLE.ITEM('ငွေပမာဏတွေ ရိုက်ပါ')}\n${STYLE.ITEM('Skip လုပ်ချင်ရင် 0 ရိုက်ပါ')}\n${STYLE.LAST_ITEM('အကုန်လောင်းချင်ရင် ALL IN ရိုက်ပါ')}\n\n${STYLE.SEPARATOR}\n\n` +
       `*၃။ 🎯 Game Type ရွေးနည်း*\n${STYLE.ITEM('Game Type Button ကို နှိပ်ပါ')}\n${STYLE.ITEM('WINGO သို့ TRX ရွေးပါ')}\n${STYLE.LAST_ITEM('WINGO မှာ 30s, 1m, 3m, 5m ရှိတယ်')}\n\n${STYLE.SEPARATOR}\n\n` +
       `*၄။ 🧬 Strategy ရွေးနည်း*\n${STYLE.ITEM('Strategy Button ကို နှိပ်ပါ')}\n${STYLE.ITEM('ကြိုက်တဲ့ Strategy ရွေးပါ')}\n${STYLE.LAST_ITEM('TREND_FOLLOW, ALTERNATE, BS_ORDER, LEO, Dream, CHAT GPT V1')}\n\n${STYLE.SEPARATOR}\n\n` +
       `*၅။ ▶️ Bot စတင်နည်း*\n${STYLE.ITEM('Activate Button ကို နှိပ်ပါ')}\n${STYLE.ITEM('Bot က Auto လောင်းပါမယ်')}\n${STYLE.LAST_ITEM('ရပ်ချင်ရင် Deactivate နှိပ်ပါ')}\n\n${STYLE.SEPARATOR}\n\n` +
@@ -2591,7 +2627,7 @@ async function textMessageHandler(ctx) {
     return;
   }
   
-  if (buttonText === `${EMOJI.BETWRAGER} Bet_Wrager`) { userState[userId] = { state: "INPUT_BET_SIZES" }; await sendMessageWithRetry(ctx, `${EMOJI.BALANCE} Enter Bet_Wragers (one per line):\n${STYLE.CODE('100')}\n${STYLE.CODE('200')}\n${STYLE.CODE('500')}`, makeMainKeyboard(true, isAdminUser)); return; }
+  if (buttonText === `${EMOJI.BETWRAGER} Bet_Wrager`) { userState[userId] = { state: "INPUT_BET_SIZES" }; await sendMessageWithRetry(ctx, `${EMOJI.BALANCE} Enter Bet_Wragers (one per line):\n${STYLE.CODE('0')} (Skip)\n${STYLE.CODE('100')}\n${STYLE.CODE('ALL IN')}`, makeMainKeyboard(true, isAdminUser)); return; }
   if (buttonText === `${EMOJI.STRATEGY} Strategy`) { await sendMessageWithRetry(ctx, `${EMOJI.STRATEGY} Choose strategy:`, makeStrategyKeyboard(userId)); return; }
   if (buttonText === `${EMOJI.SETTINGS} Betting Settings`) { await sendMessageWithRetry(ctx, `${EMOJI.SETTINGS} Choose Betting Strategy`, makeBettingStrategyKeyboard()); return; }
   if (buttonText === `${EMOJI.GAME} Game Mode`) { await sendMessageWithRetry(ctx, `${EMOJI.GAME} Select Mode:`, makeModeSelectionKeyboard()); return; }
@@ -2797,15 +2833,34 @@ async function textMessageHandler(ctx) {
   if (!await checkUserAuthorized(ctx) && text.toLowerCase() !== "login") return;
   
   if (currentState === "INPUT_BET_SIZES") {
-    const betSizes = lines.filter(s => s.match(/^\d+$/)).map(Number);
+    const rawLines = lines.map(s => s.toUpperCase().replace(/\s+/g, '')); 
+    const betSizes = [];
+    for (const s of rawLines) {
+      if (s === 'ALLIN') betSizes.push('ALL IN');
+      else if (s.match(/^\d+$/)) betSizes.push(Number(s));
+    }
+    
     if (betSizes.length === 0) { await sendMessageWithRetry(ctx, `${EMOJI.ERROR} No valid numbers entered.`, makeMainKeyboard(true, isAdminUser)); return; }
+    
     const settings = userSettings[userId];
-    if (settings.betting_strategy === "D'Alembert" && betSizes.length > 1) { await sendMessageWithRetry(ctx, `${EMOJI.ERROR} D'Alembert requires only ONE Bet_Wrager.`, makeMainKeyboard(true, isAdminUser)); return; }
+    if (settings.betting_strategy === "D'Alembert") {
+      if (betSizes.length > 1) {
+        await sendMessageWithRetry(ctx, `${EMOJI.ERROR} D'Alembert requires only ONE Bet_Wrager.`, makeMainKeyboard(true, isAdminUser)); 
+        return; 
+      }
+      if (betSizes[0] === 'ALL IN' || betSizes[0] === 0) {
+        await sendMessageWithRetry(ctx, `${EMOJI.ERROR} D'Alembert cannot use ALL IN or 0. Please enter a valid number.`, makeMainKeyboard(true, isAdminUser)); 
+        return;
+      }
+    }
+    
     userSettings[userId].bet_sizes = betSizes;
     userSettings[userId].dalembert_units = 1;
     userSettings[userId].martin_index = 0;
     userSettings[userId].custom_index = 0;
-    await sendMessageWithRetry(ctx, `${EMOJI.SUCCESS} ${STYLE.BOLD('Bet_Wrager set:')} ${betSizes.join(',')} Ks`, makeMainKeyboard(true, isAdminUser));
+    
+    const displaySizes = betSizes.join(', ');
+    await sendMessageWithRetry(ctx, `${EMOJI.SUCCESS} ${STYLE.BOLD('Bet_Wrager set:')} ${displaySizes} Ks`, makeMainKeyboard(true, isAdminUser));
     delete userState[userId];
     saveUserSettings();
   } else if (currentState === "INPUT_BS_PATTERN") {
@@ -2874,7 +2929,7 @@ async function showUserStats(ctx, userId) {
   const modeText = virtualMode ? `${EMOJI.VIRTUAL} Virtual Mode` : `${EMOJI.REAL} Real Mode`;
   const betTypeText = betType === "COLOR" ? `Color` : `Big/Small`;
   const safeText = (text) => text === null || text === undefined ? '' : escapeMarkdown(String(text));
-  const betWrager = betSizes.join(', ') || 'Not set';
+  const betWrager = betSizes.map(s => s === 'ALL IN' ? 'ALL IN' : s).join(', ') || 'Not set';
   
   const infoText =
     `${EMOJI.STATS} *ACCOUNT INFO*\n${STYLE.SEPARATOR}\n\n` +
@@ -2969,4 +3024,4 @@ function main() {
 
 if (require.main === module) {
   main();
-} 
+}
