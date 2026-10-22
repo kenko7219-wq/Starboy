@@ -134,7 +134,9 @@ const EMOJI = {
   DALEMBERT: '📽',
   CUSTOM: '📠',
   TIME: '⌛️',
-  RESULTSBS: '📊'
+  RESULTSBS: '📊',
+  SHARE: '📤',
+  IMPORT: '📥'
 };
 
 const STYLE = {
@@ -177,6 +179,28 @@ const dreamPatterns = {
   "9": "SBSBBSSBSB"
 };
 // =========================
+
+// ===== SHARE / IMPORT CONFIG LOGIC =====
+function generateShareCode(userId) {
+  const s = userSettings[userId];
+  if (!s) return null;
+  const config = {
+    strategy: s.strategy,
+    betting_strategy: s.betting_strategy,
+    game_type: s.game_type,
+    bet_type: s.bet_type,
+    bet_sizes: s.bet_sizes,
+    target_profit: s.target_profit,
+    stop_loss: s.stop_loss,
+    sl_layer: s.sl_layer,
+    layer_limit: s.layer_limit,
+    bs_sb_wait_count: s.bs_sb_wait_count,
+    bb_ss_wait_count: s.bb_ss_wait_count,
+    pattern: s.pattern
+  };
+  return Buffer.from(JSON.stringify(config)).toString('base64');
+}
+// =======================================
 
 function loadAdmins() {
   try {
@@ -1160,8 +1184,6 @@ async function winLoseChecker(bot) {
               userAllResults[userId].push(bigSmall);
               if (userAllResults[userId].length > 20) userAllResults[userId] = userAllResults[userId].slice(-20);
               
-              // [FIXED] Strategy state update should happen even if it's a 0 skip, 
-              // because the game result still happened and the bot needs to track the trend.
               if (settings.strategy === "TREND_FOLLOW") {
                 if (betType === "COLOR") {
                   if (!settings.color_trend_state) settings.color_trend_state = { last_result: null };
@@ -1193,7 +1215,6 @@ async function winLoseChecker(bot) {
                 if (userAILast10Results[userId].length > 10) userAILast10Results[userId] = userAILast10Results[userId].slice(-10);
               }
               
-              // [FIXED] Only reset SL skip waiting if it was NOT a zero skip. 
               if (!isZeroSkip) {
                 if (settings.sl_layer && settings.sl_layer > 0 && userSLSkipWaitingForWin[userId] && isWin) {
                   userShouldSkipNext[userId] = false;
@@ -1453,7 +1474,6 @@ async function bettingWorker(userId, ctx, bot) {
         break;
       }
       
-      // [FIXED] Restored the Low Balance Check logic
       const validSizes = betSizes.filter(s => typeof s === 'number' && s > 0);
       const minBetSize = validSizes.length > 0 ? Math.min(...validSizes) : 10;
       
@@ -1707,6 +1727,8 @@ function makeMainKeyboard(loggedIn = false, isAdminUser = false) {
      { text: `${EMOJI.STRATEGY} Strategy`, style: 'primary' }],
     [{ text: `${EMOJI.SETTINGS} Betting Settings`, style: 'primary' }, 
      { text: `${EMOJI.RISK} Risk Management`, style: 'primary' }],
+    [{ text: `${EMOJI.SHARE} Share Config`, style: 'primary' }, 
+     { text: `${EMOJI.IMPORT} Import Config`, style: 'success' }],
     [{ text: `${EMOJI.BET} Manual Bet`, style: 'primary' }, 
      { text: `${EMOJI.INFO} Account Info`, style: 'primary' }, 
      { text: `${EMOJI.LOGOUT} Re-Login`, style: 'danger' }],
@@ -2518,7 +2540,7 @@ async function textMessageHandler(ctx) {
   if (buttonText === `${EMOJI.LAYER} Entry Layer`) { await sendMessageWithRetry(ctx, `${EMOJI.LAYER} ${STYLE.BOLD('Entry Layer Settings')}\n\n${EMOJI.INFO} Select when to start betting:`, makeEntryLayerKeyboard()); return; }
   if (buttonText === `${EMOJI.WARNING} Bet SL`) { await sendMessageWithRetry(ctx, `${EMOJI.WARNING} ${STYLE.BOLD('Stop Loss Layer Settings')}\n\n${EMOJI.INFO} Select consecutive losses:`, makeSLLayerKeyboard()); return; }
   if (buttonText === `${EMOJI.BACK} Back`) {
-    if (userState[userId]?.state === "PLATFORM_SELECTED") {
+    if (userState[userId]?.state === "PLATFORM_SELECTED" || userState[userId]?.state === "INPUT_IMPORT_CONFIG") {
       delete userState[userId];
       const loggedIn = !!userSessions[userId];
       await sendMessageWithRetry(ctx, `${EMOJI.BACK} Returning...`, makeMainKeyboard(loggedIn, isAdminUser));
@@ -2638,6 +2660,32 @@ async function textMessageHandler(ctx) {
     return;
   }
   
+  // [NEW] Share Config Handler
+  if (buttonText === `${EMOJI.SHARE} Share Config`) {
+    const code = generateShareCode(userId);
+    if (!code) {
+      await sendMessageWithRetry(ctx, `${EMOJI.ERROR} No settings found to share.`, makeMainKeyboard(true, isAdminUser));
+      return;
+    }
+    const msg = `📤 *Share Your Config*\n${STYLE.SEPARATOR}\n` +
+                `Copy the code below and share it with your friends. They can import it to use your exact settings.\n\n` +
+                `${STYLE.CODE(code)}\n\n` +
+                `${EMOJI.INFO} *Note:* Do not share this code with untrusted people.`;
+    await sendMessageWithRetry(ctx, msg, makeMainKeyboard(true, isAdminUser));
+    return;
+  }
+
+  // [NEW] Import Config Handler
+  if (buttonText === `${EMOJI.IMPORT} Import Config`) {
+    userState[userId] = { state: "INPUT_IMPORT_CONFIG" };
+    await sendMessageWithRetry(ctx, `📥 *Import Config*\n${STYLE.SEPARATOR}\n` +
+      `Paste the config code you received from your friend below:\n\n` +
+      `*(Warning: This will overwrite your current settings)*`, 
+      Markup.keyboard([[{ text: `${EMOJI.BACK} Back`, style: 'primary' }]]).resize().oneTime(false)
+    );
+    return;
+  }
+  
   if (buttonText === `${EMOJI.LOGIN} Login`) {
     await sendMessageWithRetry(ctx, `${EMOJI.LOGIN} ${STYLE.BOLD('Select Platform')}\n\n${EMOJI.INFO} Choose your lottery platform:`, makePlatformKeyboard());
     return;
@@ -2655,6 +2703,46 @@ async function textMessageHandler(ctx) {
   
   const text = normalizeText(rawText);
   const lines = text.split('\n').map(line => line.trim()).filter(line => line);
+  
+  // [NEW] Process Imported Config
+  if (userState[userId]?.state === "INPUT_IMPORT_CONFIG") {
+    try {
+      const decoded = Buffer.from(text, 'base64').toString('utf-8');
+      const config = JSON.parse(decoded);
+      
+      const s = userSettings[userId];
+      if (config.strategy) s.strategy = config.strategy;
+      if (config.betting_strategy) s.betting_strategy = config.betting_strategy;
+      if (config.game_type) s.game_type = config.game_type;
+      if (config.bet_type) s.bet_type = config.bet_type;
+      if (config.bet_sizes) s.bet_sizes = config.bet_sizes;
+      if (config.target_profit !== undefined) s.target_profit = config.target_profit;
+      if (config.stop_loss !== undefined) s.stop_loss = config.stop_loss;
+      if (config.sl_layer !== undefined) s.sl_layer = config.sl_layer;
+      if (config.layer_limit) s.layer_limit = config.layer_limit;
+      if (config.bs_sb_wait_count !== undefined) s.bs_sb_wait_count = config.bs_sb_wait_count;
+      if (config.bb_ss_wait_count !== undefined) s.bb_ss_wait_count = config.bb_ss_wait_count;
+      if (config.pattern) s.pattern = config.pattern;
+
+      s.martin_index = 0;
+      s.dalembert_units = 1;
+      s.custom_index = 0;
+      
+      saveUserSettings();
+      delete userState[userId];
+      
+      const successMsg = `✅ *Config Imported Successfully!*\n${STYLE.SEPARATOR}\n` +
+        `${STYLE.ITEM(`Strategy: ${s.strategy}`)}\n` +
+        `${STYLE.ITEM(`Betting Mode: ${s.betting_strategy}`)}\n` +
+        `${STYLE.ITEM(`Game: ${s.game_type}`)}\n` +
+        `${STYLE.LAST_ITEM(`Bet Sizes: ${s.bet_sizes ? s.bet_sizes.join(', ') : 'Not set'}`)}\n\n` +
+        `You can now start betting.`;
+      await sendMessageWithRetry(ctx, successMsg, makeMainKeyboard(!!userSessions[userId], isAdminUser));
+    } catch (e) {
+      await sendMessageWithRetry(ctx, `${EMOJI.ERROR} Invalid Config Code. Please check and try again.`, Markup.keyboard([[{ text: `${EMOJI.BACK} Back`, style: 'primary' }]]).resize().oneTime(false));
+    }
+    return;
+  }
   
   if (userState[userId]?.state === "PLATFORM_SELECTED" && lines.length >= 2) {
     const platformKey = userState[userId].platform;
