@@ -149,7 +149,7 @@ const STYLE = {
   INFO: (text) => `ℹ️ ${text}`
 };
 
-const BOT_TOKEN = "8504941407:AAHJwJAMgkqrdcags99lbgv5q2Srq41Nw2w";
+const BOT_TOKEN = "8662121516:AAEUQg4JCWveM7xiftuD6OQJwf6jg6l8RzE";
 const ADMIN_ID = 8769857023;
 const WIN_LOSE_CHECK_INTERVAL = 5;
 const MAX_BALANCE_RETRIES = 10;
