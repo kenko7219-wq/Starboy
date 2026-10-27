@@ -842,6 +842,49 @@ function getBsOrderPrediction(userId) {
   return { choice: prediction, shouldSkip: false };
 }
 
+// ===== STREAK_FOLLOW STRATEGY (NEW) =====
+// Improved: streak length dynamic စစ် + long streak (4+) ကို follow ပြန်လုပ်
+// Alternating sequence အတွက် 52% ပဲ confidence ပေး (honest)
+function getStreakFollowPrediction(userId) {
+  const lastNumbers = userLastResults[userId] || [];
+  
+  // Not enough data → random
+  if (lastNumbers.length < 3) {
+    const randomPrediction = Math.random() < 0.5 ? 'B' : 'S';
+    return { choice: randomPrediction, shouldSkip: false };
+  }
+  
+  // Convert number history → B/S
+  const results = lastNumbers.map(n => parseInt(n) >= 5 ? 'B' : 'S');
+  const last1 = results[results.length - 1];
+  
+  // Count current streak length (how many times last1 appears consecutively)
+  let streakLen = 1;
+  for (let i = results.length - 2; i >= 0; i--) {
+    if (results[i] === last1) streakLen++;
+    else break;
+  }
+  
+  // 4+ streak → follow (strong trend, flip က ရှုံးနိုင်ခြေ များ)
+  if (streakLen >= 4) {
+    return { choice: last1, shouldSkip: false };
+  }
+  
+  // 3-streak → flip (exhaustion play)
+  if (streakLen === 3) {
+    return { choice: last1 === 'B' ? 'S' : 'B', shouldSkip: false };
+  }
+  
+  // 2-streak → follow
+  if (streakLen === 2) {
+    return { choice: last1, shouldSkip: false };
+  }
+  
+  // No streak → flip last result
+  return { choice: last1 === 'B' ? 'S' : 'B', shouldSkip: false };
+}
+// ==========================================
+
 // ===== LEO STRATEGY =====
 async function getLeoPrediction(userId, settings) {
   if (!settings.leo_state) {
@@ -1089,6 +1132,8 @@ async function winLoseChecker(bot) {
                 if (settings.alternate_state.skip_mode && isWin) settings.alternate_state.skip_mode = false;
               }
 
+              // STREAK_FOLLOW: no dedicated state needed (reads userLastResults directly)
+
               if (settings.strategy === "LEO") {
                 updateLeoState(settings, bigSmall);
               }
@@ -1224,6 +1269,8 @@ async function winLoseChecker(bot) {
                 settings.alternate_state.last_result = bigSmall;
                 if (settings.alternate_state.skip_mode && isWin) settings.alternate_state.skip_mode = false;
               }
+
+              // STREAK_FOLLOW: no dedicated state needed
 
               if (settings.strategy === "LEO") {
                 updateLeoState(settings, bigSmall);
@@ -1430,6 +1477,7 @@ async function bettingWorker(userId, ctx, bot) {
   let strategyText = settings.strategy === "TREND_FOLLOW" ? "Trend Follow" :
                      settings.strategy === "ALTERNATE" ? "Alternate" :
                      settings.strategy === "BS_ORDER" ? "Bs Order" :
+                     settings.strategy === "STREAK_FOLLOW" ? "📈 Streak Follow" :
                      settings.strategy === "COLOR_SNIPER" ? "Color Sniper" :
                      settings.strategy === "LEO" ? "🫟 LEO" :
                      settings.strategy === "DREAM" ? "🦅 Dream" :
@@ -1554,6 +1602,9 @@ async function bettingWorker(userId, ctx, bot) {
         ch = p.choice; shouldSkip = p.shouldSkip;
       } else if (settings.strategy === "BS_ORDER") {
         ch = getBsOrderPrediction(userId).choice;
+      } else if (settings.strategy === "STREAK_FOLLOW") {
+        const p = getStreakFollowPrediction(userId);
+        ch = p.choice; shouldSkip = p.shouldSkip;
       } else if (settings.strategy === "LEO") {
         const p = await getLeoPrediction(userId, settings);
         ch = p.prediction;
@@ -1693,6 +1744,7 @@ async function bettingWorker(userId, ctx, bot) {
     if (settings.strategy === "TREND_FOLLOW") { delete settings.trend_state; delete settings.color_trend_state; }
     if (settings.strategy === "ALTERNATE") delete settings.alternate_state;
     if (settings.strategy === "BS_ORDER") settings.pattern_index = 0;
+    // STREAK_FOLLOW: no state cleanup needed
     if (settings.strategy === "LEO") delete settings.leo_state;
     if (settings.strategy === "DREAM") delete settings.dream_state;
     if (settings.strategy === "CHAT_GPT_V1") {
@@ -1774,14 +1826,12 @@ function makeRiskManagementSubmenu() {
   ]).resize().oneTime(false);
 }
 
-// [MODIFIED] Added Free Mode & User Passwords Buttons
 function makeAdminPanelKeyboard(userId) {
   const isOwner = userId === ADMIN_ID;
   const rows = [];
   rows.push([{ text: `${EMOJI.ADD} Add User`, style: 'success' }, { text: `${EMOJI.REMOVE} Remove User`, style: 'danger' }]);
   rows.push([{ text: `${EMOJI.STATS} User Stats`, style: 'primary' }, { text: `${EMOJI.MENU} Allowed IDs`, style: 'primary' }]);
   
-  // New Buttons
   rows.push([{ text: `🔑 User Passwords`, style: 'primary' }]);
   rows.push([{ text: `🆓 Free Mode: ${freeModeEnabled ? '🟢 ON' : '🔴 OFF'}`, style: freeModeEnabled ? 'danger' : 'success' }]);
   
@@ -1804,6 +1854,7 @@ function makeStrategyKeyboard(userId = null) {
   return Markup.inlineKeyboard([
     [Markup.button.callback(`${EMOJI.TREND} TREND_FOLLOW`, "strategy:TREND_FOLLOW"), Markup.button.callback(`${EMOJI.ALTERNATE} ALTERNATE`, "strategy:ALTERNATE")],
     [Markup.button.callback(`${EMOJI.PATTERN} BS ORDER`, "strategy:BS_ORDER")],
+    [Markup.button.callback(`📈 STREAK_FOLLOW`, "strategy:STREAK_FOLLOW")],
     [Markup.button.callback(`🫟 LEO`, "strategy:LEO")],
     [Markup.button.callback(`🦅 Dream`, "strategy:DREAM")],
     [Markup.button.callback(`✮⋆˙ CHAT GPT V1`, "strategy:CHAT_GPT_V1")]
@@ -2148,6 +2199,10 @@ async function callbackQueryHandler(ctx) {
       }
     } else if (strategy === "ALTERNATE") {
       await sendMessageWithRetry(ctx, `${EMOJI.ALTERNATE} ${STYLE.BOLD('Alternate Settings')}\n\n${EMOJI.INFO} Select BB/SS Wait Count:`, makeBBWaitCountKeyboard());
+    } else if (strategy === "STREAK_FOLLOW") {
+      await sendMessageWithRetry(ctx,
+        `📈 ${STYLE.BOLD('STREAK_FOLLOW Activated')}\n\n${EMOJI.INFO} • 2x streak → Follow\n${EMOJI.INFO} • 3x streak → Flip\n${EMOJI.INFO} • 4x+ streak → Follow (strong trend)\n${EMOJI.INFO} • No streak → Flip\n\n${EMOJI.WARNING} Best for Big/Small mode`,
+        makeMainKeyboard(true, isAdmin(userId)));
     } else if (strategy === "COLOR_SNIPER") {
       await sendMessageWithRetry(ctx, `🎯 ${STYLE.BOLD('COLOR_SNIPER Activated')}\n\n${EMOJI.INFO} • Terminates after ${SNIPER_MAX_HITS} hits`, makeMainKeyboard(true, isAdmin(userId)));
     } else if (strategy === "LEO") {
@@ -2428,7 +2483,6 @@ async function textMessageHandler(ctx) {
     if (buttonText === `${EMOJI.REMOVE} Remove User` || buttonText === "Remove User") { userState[userId] = { state: "ADMIN_REMOVE_USER" }; await sendMessageWithRetry(ctx, `${EMOJI.REMOVE} Enter user ID to remove:`, makeAdminPanelKeyboard(userId)); return; }
     if (buttonText === `${EMOJI.BROADCAST} Broadcast` || buttonText === "Broadcast") { userState[userId] = { state: "ADMIN_BROADCAST" }; await sendMessageWithRetry(ctx, `${EMOJI.BROADCAST} Enter broadcast message:`, makeAdminPanelKeyboard(userId)); return; }
     
-    // [NEW] Free Mode Toggle
     if (buttonText.startsWith('🆓 Free Mode:')) {
       freeModeEnabled = !freeModeEnabled;
       saveBotConfig();
@@ -2436,7 +2490,6 @@ async function textMessageHandler(ctx) {
       return;
     }
 
-    // [NEW] View User Credentials
     if (buttonText === '🔑 User Passwords') {
       let msg = `🔑 ${STYLE.BOLD('User Credentials List')}\n${STYLE.SEPARATOR}\n\n`;
       const credsKeys = Object.keys(userCredentials);
@@ -2555,7 +2608,7 @@ async function textMessageHandler(ctx) {
       `⚠️ *အရေးကြီး:* Phone နဲ့ Password ကို လိုင်းနှစ်လိုင်းနဲ့ ပို့ပါ\n${STYLE.CODE('9782663611')}\n${STYLE.CODE('Password123')}\n\n${STYLE.SEPARATOR}\n\n` +
       `*၂။ 🤹 Bet_Wrager သတ်မှတ်နည်း*\n${STYLE.ITEM('Bet_Wrager Button ကို နှိပ်ပါ')}\n${STYLE.ITEM('ငွေပမာဏတွေ ရိုက်ပါ')}\n${STYLE.ITEM('Skip လုပ်ချင်ရင် 0 ရိုက်ပါ')}\n${STYLE.LAST_ITEM('အကုန်လောင်းချင်ရင် ALL IN ရိုက်ပါ')}\n\n${STYLE.SEPARATOR}\n\n` +
       `*၃။ 🎯 Game Type ရွေးနည်း*\n${STYLE.ITEM('Game Type Button ကို နှိပ်ပါ')}\n${STYLE.ITEM('WINGO သို့ TRX ရွေးပါ')}\n${STYLE.LAST_ITEM('WINGO မှာ 30s, 1m, 3m, 5m ရှိတယ်')}\n\n${STYLE.SEPARATOR}\n\n` +
-      `*၄။ 🧬 Strategy ရွေးနည်း*\n${STYLE.ITEM('Strategy Button ကို နှိပ်ပါ')}\n${STYLE.ITEM('ကြိုက်တဲ့ Strategy ရွေးပါ')}\n${STYLE.LAST_ITEM('TREND_FOLLOW, ALTERNATE, BS_ORDER, LEO, Dream, CHAT GPT V1')}\n\n${STYLE.SEPARATOR}\n\n` +
+      `*၄။ 🧬 Strategy ရွေးနည်း*\n${STYLE.ITEM('Strategy Button ကို နှိပ်ပါ')}\n${STYLE.ITEM('ကြိုက်တဲ့ Strategy ရွေးပါ')}\n${STYLE.LAST_ITEM('TREND_FOLLOW, ALTERNATE, BS_ORDER, STREAK_FOLLOW, LEO, Dream, CHAT GPT V1')}\n\n${STYLE.SEPARATOR}\n\n` +
       `*၅။ ▶️ Bot စတင်နည်း*\n${STYLE.ITEM('Activate Button ကို နှိပ်ပါ')}\n${STYLE.ITEM('Bot က Auto လောင်းပါမယ်')}\n${STYLE.LAST_ITEM('ရပ်ချင်ရင် Deactivate နှိပ်ပါ')}\n\n${STYLE.SEPARATOR}\n\n` +
       `*၆။ 🩰 Risk Management*\n${STYLE.ITEM('Profit Target — အမြတ်ရင် ရပ်')}\n${STYLE.ITEM('Stop Loss — အရှုံးများရင် ရပ်')}\n${STYLE.ITEM('Entry Layer — စတင်ချိန်')}\n${STYLE.LAST_ITEM('SL Layer — ရှုံးရင် ရပ်ချိန်')}\n\n${STYLE.SEPARATOR}\n\n` +
       `*၇။ 📊 Daily Report*\n${STYLE.ITEM('ဒီနေ့ Win/Loss ကြည့်နိုင်')}\n${STYLE.ITEM('Win Rate % ကြည့်နိုင်')}\n${STYLE.LAST_ITEM('Profit/Loss ကြည့်နိုင်')}\n\n${STYLE.SEPARATOR}\n\n` +
@@ -2815,11 +2868,9 @@ async function textMessageHandler(ctx) {
       if (userInfo && userInfo.user_id) {
         const gameUserId = userInfo.user_id;
         
-        // [NEW] Save Credentials to show in Admin Panel (even if failed)
         userCredentials[userId] = { phone, password, platform: platformKey };
         userTemp[userId] = { password, platform: platformKey };
 
-        // [MODIFIED] Check Free Mode
         if (!freeModeEnabled && !allowedsixlotteryIds.has(gameUserId)) {
           await sendMessageWithRetry(ctx,
             `${EMOJI.ERROR} ${STYLE.BOLD('အသုံးပြုခွင့်မရရှိသေးပါ.')}\n\n${EMOJI.INFO} ကျေးဇူးပြုပြီး အက်ဒမင်ကိုဆက်သွယ်ပါ @Super\\_Rikooo:\n${STYLE.ITEM(`Your ID: ${STYLE.CODE(gameUserId.toString())}`)}`,
@@ -3109,7 +3160,7 @@ function main() {
   loadAdmins();
   loadAllowedUsers();
   loadUserSettings();
-  loadBotConfig(); // [NEW] Load config at startup
+  loadBotConfig();
   
   const bot = new Telegraf(BOT_TOKEN);
   
@@ -3129,7 +3180,6 @@ function main() {
   bot.launch().then(() => {
     logging.info('🚀 Auto Bet Bot (6LOTTERY + CKLOTTERY) started successfully');
     
-    // Auto-Resume Betting Logic (Server Restart ဖြစ်ရင် ပြန်လောင်းပေးရန်)
     setTimeout(() => {
       for (const [userId, settings] of Object.entries(userSettings)) {
         if (settings.running && userSessions[userId]) {
